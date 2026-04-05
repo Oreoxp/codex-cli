@@ -25,7 +25,9 @@ class _SetupPageState extends State<SetupPage> {
   late final TextEditingController _endpointController;
   late final TextEditingController _apiKeyController;
   late final TextEditingController _providerBaseUrlController;
+  late final TextEditingController _modelController;
   String _authMethod = 'ChatGPT';
+  String _approvalPolicy = 'unlessTrusted';
   bool _saving = false;
 
   @override
@@ -43,7 +45,11 @@ class _SetupPageState extends State<SetupPage> {
     _providerBaseUrlController = TextEditingController(
       text: widget.existingConfig?.providerBaseUrl ?? '',
     );
+    _modelController = TextEditingController(
+      text: widget.existingConfig?.model ?? '',
+    );
     _authMethod = widget.existingConfig?.authMethod ?? 'ChatGPT';
+    _approvalPolicy = widget.existingConfig?.approvalPolicy ?? 'unlessTrusted';
   }
 
   @override
@@ -52,6 +58,7 @@ class _SetupPageState extends State<SetupPage> {
     _endpointController.dispose();
     _apiKeyController.dispose();
     _providerBaseUrlController.dispose();
+    _modelController.dispose();
     super.dispose();
   }
 
@@ -81,9 +88,18 @@ class _SetupPageState extends State<SetupPage> {
           authMethod: _authMethod,
           apiKey: _apiKeyController.text.trim().ifEmpty(null),
           providerBaseUrl: _providerBaseUrlController.text.trim().ifEmpty(null),
+          model: _modelController.text.trim().ifEmpty(null),
+          approvalPolicy: _approvalPolicy,
         ),
       );
-      if (mounted) Navigator.of(context).pop(true);
+      if (mounted) {
+        if (Navigator.canPop(context)) {
+          Navigator.pop(context, true);
+        } else {
+          // On first setup, reload the app by restarting
+          Navigator.pushReplacementNamed(context, '/');
+        }
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -138,6 +154,16 @@ class _SetupPageState extends State<SetupPage> {
               ),
             ),
             const SizedBox(height: 12),
+            TextField(
+              controller: _modelController,
+              decoration: const InputDecoration(
+                labelText: 'Model (optional)',
+                hintText: 'e.g. gpt-4, claude-3-opus',
+                helperText: 'If set, overrides server default for turns you initiate.',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
             DropdownButtonFormField<String>(
               initialValue: _authMethod,
               decoration: const InputDecoration(
@@ -150,13 +176,27 @@ class _SetupPageState extends State<SetupPage> {
               ],
               onChanged: (v) => setState(() => _authMethod = v!),
             ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _approvalPolicy,
+              decoration: const InputDecoration(
+                labelText: 'Approval Policy',
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'unlessTrusted', child: Text('Unless Trusted (default)')),
+                DropdownMenuItem(value: 'always', child: Text('Always')),
+                DropdownMenuItem(value: 'never', child: Text('Never')),
+              ],
+              onChanged: (v) => setState(() => _approvalPolicy = v!),
+            ),
             if (_authMethod == 'API Key') ...[
               const SizedBox(height: 12),
               TextField(
                 controller: _apiKeyController,
                 decoration: const InputDecoration(
                   labelText: 'API Key',
-                  helperText: 'Stored locally. Not yet passed to Codex — pending upstream support.',
+                  helperText: 'Written to config via config/batchWrite as experimental_bearer_token.',
                   border: OutlineInputBorder(),
                 ),
                 obscureText: true,
@@ -166,8 +206,8 @@ class _SetupPageState extends State<SetupPage> {
                 controller: _providerBaseUrlController,
                 decoration: const InputDecoration(
                   labelText: 'LLM Provider Base URL (optional)',
-                  hintText: 'e.g. http://localhost:11434/v1',
-                  helperText: 'Stored locally. Not yet passed to Codex — pending upstream support.',
+                  hintText: 'e.g. https://api.siliconflow.cn/v1',
+                  helperText: 'Written to model_providers.workbench_custom via config/batchWrite on connect.',
                   border: OutlineInputBorder(),
                 ),
               ),

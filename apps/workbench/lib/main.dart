@@ -40,18 +40,26 @@ class _WorkbenchAppState extends State<WorkbenchApp> {
   Future<void> _loadSettings() async {
     final profile = await _settingsService.loadUserProfile();
     final config = await _settingsService.loadRuntimeConfig();
+    if (!mounted) return;
     setState(() {
       _profile = profile;
       _runtimeConfig = config;
       _controller.userProfile = profile;
+      _controller.runtimeConfig = config;
       _loading = false;
     });
+
+    // Auto-connect once we have a saved endpoint.
+    if (config != null && !_controller.isConnected) {
+      _controller.connect(config.endpoint);
+    }
   }
 
-  Future<void> _openSetup() async {
+  /// Open settings and reconnect if the config changed.
+  Future<void> _openSettings(BuildContext context) async {
     final result = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (context) => SetupPage(
+        builder: (_) => SetupPage(
           settingsService: _settingsService,
           existingProfile: _profile,
           existingConfig: _runtimeConfig,
@@ -59,7 +67,11 @@ class _WorkbenchAppState extends State<WorkbenchApp> {
       ),
     );
     if (result == true) {
-      await _loadSettings();
+      // Disconnect first so we can reconnect to possibly new endpoint.
+      if (_controller.isConnected) {
+        await _controller.disconnect();
+      }
+      await _loadSettings(); // reloads config and triggers auto-connect
     }
   }
 
@@ -91,10 +103,12 @@ class _WorkbenchAppState extends State<WorkbenchApp> {
                   existingProfile: _profile,
                   existingConfig: _runtimeConfig,
                 )
-              : WorkbenchPage(
-                  controller: _controller,
-                  runtimeConfig: _runtimeConfig!,
-                  onOpenSettings: _openSetup,
+              : Builder(
+                  builder: (context) => WorkbenchPage(
+                    controller: _controller,
+                    runtimeConfig: _runtimeConfig!,
+                    onOpenSettings: () => _openSettings(context),
+                  ),
                 ),
     );
   }

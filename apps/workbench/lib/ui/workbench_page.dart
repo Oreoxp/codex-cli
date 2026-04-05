@@ -3,27 +3,32 @@ import 'package:flutter/material.dart';
 import '../controllers/workbench_controller.dart';
 import '../models/runtime_config.dart';
 import 'approval_panel.dart';
+import 'chat_view.dart';
 import 'connection_panel.dart';
-import 'event_list.dart';
 
 /// Main workbench page.
 ///
-/// Layout (single window, desktop):
+/// Layout:
 ///
-///   ┌────────────────────────────────────────────────┐
-///   │  Connection Panel (top bar)                    │
-///   ├─────────────────────────┬──────────────────────┤
-///   │                         │  Result / Diff Panel │
-///   │  Event Feed             │  (right side)        │
-///   │                         │                      │
-///   ├─────────────────────────┴──────────────────────┤
-///   │  Approval Panel (shown only when pending)      │
-///   ├────────────────────────────────────────────────┤
-///   │  Prompt Input + Send / Interrupt buttons       │
-///   └────────────────────────────────────────────────┘
+///   ┌─────────────────────────────────────────┐
+///   │  AppBar (name · title · conn status)    │
+///   ├─────────────────────────────────────────┤
+///   │  ConnectionPanel (status bar)           │
+///   ├─────────────────────────────────────────┤
+///   │  ChatView  (main area)                  │
+///   ├─────────────────────────────────────────┤
+///   │  ApprovalPanel (only when pending)      │
+///   ├─────────────────────────────────────────┤
+///   │  Debug Panel (collapsible)              │
+///   ├─────────────────────────────────────────┤
+///   │  Prompt input + Send / Interrupt        │
+///   └─────────────────────────────────────────┘
 class WorkbenchPage extends StatefulWidget {
   final WorkbenchController controller;
   final RuntimeConfig runtimeConfig;
+
+  /// Called when the user taps Settings.  Caller is responsible for navigating
+  /// to SetupPage and triggering a reconnect if needed.
   final VoidCallback onOpenSettings;
 
   const WorkbenchPage({
@@ -40,6 +45,7 @@ class WorkbenchPage extends StatefulWidget {
 class _WorkbenchPageState extends State<WorkbenchPage> {
   final _promptController = TextEditingController();
   final _cwdController = TextEditingController(text: '/tmp');
+  bool _debugExpanded = false;
 
   @override
   void dispose() {
@@ -81,10 +87,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                   style: const TextStyle(fontSize: 13, color: Colors.white70),
                 ),
                 const SizedBox(width: 12),
-                const Text(
-                  '·',
-                  style: TextStyle(fontSize: 15, color: Colors.grey),
-                ),
+                const Text('·',
+                    style: TextStyle(fontSize: 15, color: Colors.grey)),
                 const SizedBox(width: 12),
                 const Text(
                   '小螃蟹 Workbench',
@@ -99,8 +103,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                   child: Center(
                     child: Text(
                       'thread: ${_short(ctrl.currentThreadId!)}',
-                      style: const TextStyle(
-                          fontSize: 11, color: Colors.grey),
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.grey),
                     ),
                   ),
                 ),
@@ -113,59 +117,32 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           ),
           body: Column(
             children: [
-              // ── Connection panel ─────────────────────────────────────────
+              // ── Connection status bar ─────────────────────────────────────
               ConnectionPanel(
                 controller: ctrl,
                 defaultEndpoint: widget.runtimeConfig.endpoint,
               ),
+              const Divider(height: 1, color: Color(0xFF2A2A2A)),
 
-              // ── Main area: event feed + result panel ─────────────────────
+              // ── Chat view (main area) ─────────────────────────────────────
               Expanded(
-                child: Row(
-                  children: [
-                    // Event feed (left, 60% width)
-                    Expanded(
-                      flex: 6,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(12, 4, 0, 2),
-                            child: Text(
-                              'Event Feed',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: Colors.grey.shade600,
-                                letterSpacing: 1.2,
-                              ),
-                            ),
-                          ),
-                          const Divider(height: 1, color: Color(0xFF333333)),
-                          Expanded(
-                            child: EventList(controller: ctrl),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    const VerticalDivider(
-                        width: 1, color: Color(0xFF333333)),
-
-                    // Result / diff panel (right, 40% width)
-                    Expanded(
-                      flex: 4,
-                      child: _ResultPanel(controller: ctrl),
-                    ),
-                  ],
-                ),
+                child: ChatView(controller: ctrl),
               ),
 
-              // ── Approval panel (only visible when pending) ────────────────
+              // ── Approval panel (only when pending) ────────────────────────
               ApprovalPanel(controller: ctrl),
+
+              // ── Collapsible debug / log panel ─────────────────────────────
+              _DebugPanel(
+                controller: ctrl,
+                expanded: _debugExpanded,
+                onToggle: () =>
+                    setState(() => _debugExpanded = !_debugExpanded),
+              ),
 
               const Divider(height: 1, color: Color(0xFF333333)),
 
-              // ── Prompt input bar ─────────────────────────────────────────
+              // ── Prompt input bar ──────────────────────────────────────────
               _PromptBar(
                 promptController: _promptController,
                 cwdController: _cwdController,
@@ -183,94 +160,64 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       id.length > 12 ? '${id.substring(0, 12)}…' : id;
 }
 
-// ── Result / Diff Panel ────────────────────────────────────────────────────
+// ── Debug / Diff panel ────────────────────────────────────────────────────────
 
-class _ResultPanel extends StatelessWidget {
+class _DebugPanel extends StatelessWidget {
   final WorkbenchController controller;
-  const _ResultPanel({required this.controller});
+  final bool expanded;
+  final VoidCallback onToggle;
+
+  const _DebugPanel({
+    required this.controller,
+    required this.expanded,
+    required this.onToggle,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final msg = controller.lastAgentMessage;
     final diff = controller.lastTurnDiff;
+    final hasDiff = diff != null;
 
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 4, 0, 2),
-          child: Text(
-            'Result  /  Diff',
-            style: TextStyle(
-              fontSize: 11,
-              color: Colors.grey.shade600,
-              letterSpacing: 1.2,
-            ),
-          ),
-        ),
-        const Divider(height: 1, color: Color(0xFF333333)),
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(10),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+        // Toggle header
+        InkWell(
+          onTap: hasDiff ? onToggle : null,
+          child: Container(
+            color: const Color(0xFF1E1E1E),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            child: Row(
               children: [
-                if (controller.isInProgress)
-                  const Row(
-                    children: [
-                      SizedBox(
-                        width: 12,
-                        height: 12,
-                        child: CircularProgressIndicator(strokeWidth: 1.5),
-                      ),
-                      SizedBox(width: 8),
-                      Text(
-                        'Working…',
-                        style: TextStyle(color: Colors.grey, fontSize: 12),
-                      ),
-                    ],
+                Icon(
+                  expanded ? Icons.expand_more : Icons.chevron_right,
+                  size: 16,
+                  color: hasDiff ? Colors.grey : Colors.grey.shade700,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  hasDiff ? 'Diff' : 'Diff  (none)',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: hasDiff ? Colors.grey : Colors.grey.shade700,
+                    letterSpacing: 0.8,
                   ),
-                if (msg != null) ...[
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Agent reply:',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey,
-                      letterSpacing: 1,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  SelectableText(
-                    msg,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: Colors.white,
-                    ),
-                  ),
-                ],
-                if (diff != null) ...[
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Diff:',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey,
-                      letterSpacing: 1,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  _DiffView(diff: diff),
-                ],
-                if (msg == null && diff == null && !controller.isInProgress)
-                  const Text(
-                    'No result yet.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12),
-                  ),
+                ),
               ],
             ),
           ),
         ),
+
+        if (expanded && hasDiff)
+          Container(
+            height: 160,
+            color: const Color(0xFF111111),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(8),
+              child: _DiffView(diff: diff),
+            ),
+          ),
       ],
     );
   }
@@ -297,7 +244,7 @@ class _DiffView extends StatelessWidget {
           line,
           style: TextStyle(
             fontFamily: 'monospace',
-            fontSize: 11,
+            fontSize: 10,
             color: color,
           ),
         );
@@ -306,7 +253,7 @@ class _DiffView extends StatelessWidget {
   }
 }
 
-// ── Prompt input bar ──────────────────────────────────────────────────────
+// ── Prompt input bar ──────────────────────────────────────────────────────────
 
 class _PromptBar extends StatelessWidget {
   final TextEditingController promptController;
@@ -324,8 +271,7 @@ class _PromptBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final canSend = controller.isConnected && !controller.isInProgress;
-    final canInterrupt =
-        controller.isConnected && controller.isInProgress;
+    final canInterrupt = controller.isConnected && controller.isInProgress;
 
     return Container(
       padding: const EdgeInsets.all(8),
@@ -368,9 +314,14 @@ class _PromptBar extends StatelessWidget {
                   controller: promptController,
                   enabled: canSend,
                   maxLines: null,
-                  style: const TextStyle(fontSize: 13, color: Colors.white),
+                  style:
+                      const TextStyle(fontSize: 13, color: Colors.white),
                   decoration: InputDecoration(
-                    hintText: 'Enter a prompt for Codex…',
+                    hintText: canSend
+                        ? 'Enter a prompt for Codex…'
+                        : (controller.isConnected
+                            ? 'Working…'
+                            : 'Connecting…'),
                     hintStyle: const TextStyle(color: Colors.grey),
                     filled: true,
                     fillColor: const Color(0xFF2A2A2A),

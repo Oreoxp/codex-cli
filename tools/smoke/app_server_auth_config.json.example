@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy this file to app_server_auth_config.json and fill in real values.",
+  "url": "ws://127.0.0.1:60000",
+  "apiKey": "",
+  "providerBaseUrl": "",
+  "provider": "",
+  "_todo_providerBaseUrl": "TODO: providerBaseUrl config key name via config/value/write is not documented in README. Do not pass to runtime until confirmed.",
+  "_todo_provider": "TODO: provider override via RPC is not documented. Placeholder only."
+}

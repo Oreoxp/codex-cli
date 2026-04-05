@@ -6,7 +6,7 @@ import 'package:xiao_pangxie_workbench/models/runtime_config.dart';
 import 'package:xiao_pangxie_workbench/services/app_server_service.dart';
 import 'package:xiao_pangxie_workbench/ui/workbench_page.dart';
 
-// Minimal fake service (no real WS needed for widget tests).
+// Minimal stub — no real WS needed for widget tests.
 class _StubService extends AppServerService {
   @override
   bool get isConnected => false;
@@ -16,66 +16,82 @@ class _StubService extends AppServerService {
   Future<void> disconnect() async {}
 }
 
+WorkbenchPage _page(WorkbenchController ctrl) => WorkbenchPage(
+      controller: ctrl,
+      runtimeConfig: const RuntimeConfig(
+        provider: 'Codex',
+        endpoint: 'ws://127.0.0.1:60000',
+        authMethod: 'ChatGPT',
+      ),
+      onOpenSettings: () {},
+    );
+
 void main() {
-  testWidgets('WorkbenchPage renders connection panel and send button',
-      (WidgetTester tester) async {
-    final service = _StubService();
-    final controller = WorkbenchController(service);
-    const config = RuntimeConfig(
-      provider: 'Codex',
-      endpoint: 'ws://127.0.0.1:60000',
-      authMethod: 'ChatGPT',
-    );
+  group('WorkbenchPage widget tests', () {
+    testWidgets('renders app title and Send button', (tester) async {
+      final service = _StubService();
+      final ctrl = WorkbenchController(service);
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: WorkbenchPage(
-          controller: controller,
-          runtimeConfig: config,
-          onOpenSettings: () {},
-        ),
-      ),
-    );
+      await tester.pumpWidget(MaterialApp(home: _page(ctrl)));
 
-    // Connection panel visible.
-    expect(find.text('Connect'), findsOneWidget);
+      expect(find.text('Send'), findsOneWidget);
+      expect(find.textContaining('小螃蟹'), findsOneWidget);
 
-    // Send button visible.
-    expect(find.text('Send'), findsOneWidget);
+      ctrl.dispose();
+      service.dispose();
+    });
 
-    // App title in AppBar.
-    expect(find.textContaining('小螃蟹'), findsOneWidget);
+    testWidgets('Send button is disabled when disconnected', (tester) async {
+      final service = _StubService();
+      final ctrl = WorkbenchController(service);
 
-    controller.dispose();
-    service.dispose();
-  });
+      await tester.pumpWidget(MaterialApp(home: _page(ctrl)));
 
-  testWidgets('Send button is disabled when disconnected',
-      (WidgetTester tester) async {
-    final service = _StubService();
-    final controller = WorkbenchController(service);
-    const config = RuntimeConfig(
-      provider: 'Codex',
-      endpoint: 'ws://127.0.0.1:60000',
-      authMethod: 'ChatGPT',
-    );
+      final btn = tester.widget<ElevatedButton>(
+        find.widgetWithText(ElevatedButton, 'Send'),
+      );
+      expect(btn.onPressed, isNull);
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: WorkbenchPage(
-          controller: controller,
-          runtimeConfig: config,
-          onOpenSettings: () {},
-        ),
-      ),
-    );
+      ctrl.dispose();
+      service.dispose();
+    });
 
-    final sendBtn = tester.widget<ElevatedButton>(
-      find.widgetWithText(ElevatedButton, 'Send'),
-    );
-    expect(sendBtn.onPressed, isNull);
+    testWidgets('chat view shows empty state when no messages', (tester) async {
+      final service = _StubService();
+      final ctrl = WorkbenchController(service);
 
-    controller.dispose();
-    service.dispose();
+      await tester.pumpWidget(MaterialApp(home: _page(ctrl)));
+
+      expect(find.textContaining('Send a prompt'), findsOneWidget);
+
+      ctrl.dispose();
+      service.dispose();
+    });
+
+    testWidgets('connection status bar shows Disconnected by default',
+        (tester) async {
+      final service = _StubService();
+      final ctrl = WorkbenchController(service);
+
+      await tester.pumpWidget(MaterialApp(home: _page(ctrl)));
+
+      expect(find.text('Disconnected'), findsOneWidget);
+
+      ctrl.dispose();
+      service.dispose();
+    });
+
+    testWidgets('debug panel shows "Diff (none)" when no diff yet',
+        (tester) async {
+      final service = _StubService();
+      final ctrl = WorkbenchController(service);
+
+      await tester.pumpWidget(MaterialApp(home: _page(ctrl)));
+
+      expect(find.textContaining('Diff'), findsOneWidget);
+
+      ctrl.dispose();
+      service.dispose();
+    });
   });
 }
