@@ -6,8 +6,36 @@ import '../models/chat_message.dart';
 import '../models/protocol.dart';
 import '../models/runtime_config.dart';
 import '../models/thread_state.dart';
+import '../models/thread_state.dart';
 import '../models/user_profile.dart';
 import '../services/app_server_service.dart';
+
+/// Simple workspace model.
+class Workspace {
+  final String id;
+  final String name;
+  final String cwd;
+
+  Workspace({required this.id, required this.name, required this.cwd});
+}
+
+/// Simple thread info model.
+class ThreadInfo {
+  final String id;
+  final String cwd;
+  /// First user message from history — used as display title after backfill.
+  String? title;
+
+  ThreadInfo({required this.id, required this.cwd, this.title});
+
+  factory ThreadInfo.fromJson(Map<String, dynamic> json) {
+    return ThreadInfo(
+      id: json['id'] as String? ?? '',
+      cwd: json['cwd'] as String? ?? '',
+      title: json['name'] as String?,
+    );
+  }
+}
 
 /// Simple workspace model.
 class Workspace {
@@ -61,9 +89,26 @@ class WorkbenchController extends ChangeNotifier {
   String? currentWorkspaceId;
   final Map<String, List<ThreadInfo>> workspaceThreads = {};
 
+  // ── Workspace state ──────────────────────────────────────────────────────
+
+  final List<Workspace> workspaceList = [];
+  String? currentWorkspaceId;
+  final Map<String, List<ThreadInfo>> workspaceThreads = {};
+
   // ── Thread / Turn state ───────────────────────────────────────────────────
 
   String? currentThreadId;
+  final Map<String, ThreadState> _threadStates = {};
+
+  ThreadState _getOrCreateThreadState(String threadId) {
+    return _threadStates.putIfAbsent(threadId, () => ThreadState(threadId: threadId));
+  }
+
+  ThreadState? get currentThreadState =>
+      currentThreadId != null ? _getOrCreateThreadState(currentThreadId!) : null;
+
+  String? get currentTurnId => currentThreadState?.currentTurnId;
+  String? get currentTurnStatus => currentThreadState?.currentTurnStatus;
   final Map<String, ThreadState> _threadStates = {};
 
   ThreadState _getOrCreateThreadState(String threadId) {
@@ -102,6 +147,20 @@ class WorkbenchController extends ChangeNotifier {
     workspaceList.add(defaultWorkspace);
     currentWorkspaceId = defaultWorkspace.id;
   }
+  WorkbenchController(this._service, {this.userProfile, this.runtimeConfig}) {
+    // Initialize with default workspace
+    _initializeDefaultWorkspace();
+  }
+
+  void _initializeDefaultWorkspace() {
+    final defaultWorkspace = Workspace(
+      id: 'default',
+      name: 'Default',
+      cwd: runtimeConfig?.cwd ?? '/tmp',
+    );
+    workspaceList.add(defaultWorkspace);
+    currentWorkspaceId = defaultWorkspace.id;
+  }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -123,6 +182,7 @@ class WorkbenchController extends ChangeNotifier {
       _log('WS', 'connect success → $url');
       await _applyProviderConfig();
       await _loadDefaultWorkspaceThreads();
+      await _loadDefaultWorkspaceThreads();
     } catch (e, st) {
       _log('ERR', 'connect failed → $url\n'
           '  reason : $e\n'
@@ -137,6 +197,7 @@ class WorkbenchController extends ChangeNotifier {
     _msgSub?.cancel();
     _msgSub = null;
     currentThreadId = null;
+    _threadStates.clear();
     _threadStates.clear();
     _log('WS', 'disconnected');
     notifyListeners();
@@ -623,6 +684,13 @@ class WorkbenchController extends ChangeNotifier {
           wsThreads.add(ThreadInfo(id: currentThreadId!, cwd: cwd));
         }
       }
+      // Track new thread in workspace threads map
+      if (currentWorkspaceId != null) {
+        final wsThreads = workspaceThreads.putIfAbsent(currentWorkspaceId!, () => []);
+        if (!wsThreads.any((t) => t.id == currentThreadId)) {
+          wsThreads.add(ThreadInfo(id: currentThreadId!, cwd: cwd));
+        }
+      }
       _log('RPC', '← thread/start OK  threadId=$currentThreadId');
       notifyListeners();
     } catch (e, st) {
@@ -643,7 +711,12 @@ class WorkbenchController extends ChangeNotifier {
         ? runtimeConfig!.cwd!
         : cwd;
 
+    final effectiveCwd = (runtimeConfig?.cwd?.isNotEmpty == true)
+        ? runtimeConfig!.cwd!
+        : cwd;
+
     if (currentThreadId == null) {
+      await startThread(cwd: effectiveCwd);
       await startThread(cwd: effectiveCwd);
     }
 
@@ -657,6 +730,7 @@ class WorkbenchController extends ChangeNotifier {
 
     // Add user message to chat view immediately.
     state.chatMessages.add(ChatMessage(
+    state.chatMessages.add(ChatMessage(
       timestamp: DateTime.now(),
       role: ChatRole.user,
       text: prompt,
@@ -665,6 +739,7 @@ class WorkbenchController extends ChangeNotifier {
     final policy = runtimeConfig?.approvalPolicy ?? 'unlessTrusted';
     final model = runtimeConfig?.model;
     _log('RPC',
+        '→ turn/start  threadId=$currentThreadId  cwd=$effectiveCwd  '
         '→ turn/start  threadId=$currentThreadId  cwd=$effectiveCwd  '
         'approvalPolicy=$policy  model=${model ?? "(default)"}\n'
         '  prompt: "${_truncate(prompt, 200)}"');
@@ -683,12 +758,17 @@ class WorkbenchController extends ChangeNotifier {
     try {
       final result = await _service.sendRequest('turn/start', params);
       state.currentTurnId =
+      state.currentTurnId =
           (result as Map<String, dynamic>)['turn']['id'] as String;
+      state.currentTurnStatus = 'inProgress';
+      _log('RPC', '← turn/start OK  turnId=${state.currentTurnId}');
       state.currentTurnStatus = 'inProgress';
       _log('RPC', '← turn/start OK  turnId=${state.currentTurnId}');
     } catch (e, st) {
       _log('ERR', 'turn/start failed\n  reason : $e\n  stack  : ${_firstLines(st, 4)}');
       // Remove the user message we already added — turn never started.
+      if (state.chatMessages.isNotEmpty && state.chatMessages.last.role == ChatRole.user) {
+        state.chatMessages.removeLast();
       if (state.chatMessages.isNotEmpty && state.chatMessages.last.role == ChatRole.user) {
         state.chatMessages.removeLast();
       }
@@ -716,7 +796,33 @@ class WorkbenchController extends ChangeNotifier {
   void respondToApproval(String decision) {
     final state = currentThreadState;
     if (state?.pendingApproval == null) return;
+    final state = currentThreadState;
+    if (state?.pendingApproval == null) return;
     _log('APPROVAL',
+        '→ response  requestId=${state!.pendingApproval!.requestId}  '
+        'decision=$decision  kind=${state.pendingApproval!.kind}  '
+        'cmd="${state.pendingApproval!.commandSummary}"');
+    _service.sendResponse(state.pendingApproval!.requestId, {'decision': decision});
+    state.pendingApproval = null;
+    notifyListeners();
+  }
+
+  // ── Cwd update ───────────────────────────────────────────────────────────
+
+  void updateCwd(String newCwd) {
+    final config = runtimeConfig;
+    if (config == null) return;
+    runtimeConfig = RuntimeConfig(
+      provider: config.provider,
+      endpoint: config.endpoint,
+      authMethod: config.authMethod,
+      apiKey: config.apiKey,
+      providerBaseUrl: config.providerBaseUrl,
+      model: config.model,
+      approvalPolicy: config.approvalPolicy,
+      cwd: newCwd.isEmpty ? null : newCwd,
+    );
+    _log('CWD', 'updateCwd → "${newCwd.isEmpty ? "(cleared)" : newCwd}"');
         '→ response  requestId=${state!.pendingApproval!.requestId}  '
         'decision=$decision  kind=${state.pendingApproval!.kind}  '
         'cmd="${state.pendingApproval!.commandSummary}"');
@@ -825,6 +931,9 @@ class WorkbenchController extends ChangeNotifier {
         final state = _getOrCreateThreadState(p['threadId'] as String? ?? currentThreadId ?? '');
         state.currentTurnId = turn?['id'] as String? ?? state.currentTurnId;
         state.currentTurnStatus = 'inProgress';
+        final state = _getOrCreateThreadState(p['threadId'] as String? ?? currentThreadId ?? '');
+        state.currentTurnId = turn?['id'] as String? ?? state.currentTurnId;
+        state.currentTurnStatus = 'inProgress';
         _log('TURN', 'turn/started  id=${turn?['id']}  threadId=${p['threadId']}');
 
       case 'turn/completed':
@@ -879,6 +988,12 @@ class WorkbenchController extends ChangeNotifier {
         }
 
       case 'turn/diff/updated':
+        final state = currentThreadState;
+        if (state != null) {
+          state.lastTurnDiff = p['diff'] as String?;
+          final lines = state.lastTurnDiff?.split('\n').length ?? 0;
+          _log('TURN', 'turn/diff/updated  $lines lines');
+        }
         final state = currentThreadState;
         if (state != null) {
           state.lastTurnDiff = p['diff'] as String?;
@@ -1200,6 +1315,8 @@ class WorkbenchController extends ChangeNotifier {
       final isCmd = r.method.contains('commandExecution');
       final state = _getOrCreateThreadState(p['threadId'] as String? ?? '');
       state.pendingApproval = ApprovalRequest(
+      final state = _getOrCreateThreadState(p['threadId'] as String? ?? '');
+      state.pendingApproval = ApprovalRequest(
         requestId: r.id,
         kind: isCmd ? 'commandExecution' : 'fileChange',
         threadId: p['threadId'] as String? ?? '',
@@ -1213,8 +1330,13 @@ class WorkbenchController extends ChangeNotifier {
         cwd: p['cwd'] as String?,
         reason: p['reason'] as String?,
         diffSnapshot: state.lastTurnDiff,
+        diffSnapshot: state.lastTurnDiff,
       );
       _log('APPROVAL',
+          'requestApproval  id=${r.id}  kind=${state.pendingApproval!.kind}\n'
+          '  cmd    : ${state.pendingApproval!.commandSummary}\n'
+          '  cwd    : ${state.pendingApproval!.cwd}\n'
+          '  reason : ${state.pendingApproval!.reason ?? "(none)"}');
           'requestApproval  id=${r.id}  kind=${state.pendingApproval!.kind}\n'
           '  cmd    : ${state.pendingApproval!.commandSummary}\n'
           '  cwd    : ${state.pendingApproval!.cwd}\n'
@@ -1224,6 +1346,86 @@ class WorkbenchController extends ChangeNotifier {
       _log('WARN',
           'unhandled server request  method=${r.method}  id=${r.id}  '
           'params=${_summarizeMap(r.params ?? {})}');
+    }
+  }
+
+  // ── Thread title helpers ──────────────────────────────────────────────────
+
+  /// Remove a workspace and archive all its threads on the server.
+  Future<void> removeWorkspace(String workspaceId) async {
+    if (workspaceId == 'default') return; // protect default
+    // Archive all threads in this workspace so they don't reappear on restart.
+    final threads = workspaceThreads[workspaceId] ?? [];
+    for (final t in threads) {
+      try {
+        await _service.archiveThread(t.id);
+      } catch (e) {
+        _log('WARN', 'failed to archive thread ${t.id}: $e');
+      }
+      _threadStates.remove(t.id);
+    }
+    workspaceList.removeWhere((w) => w.id == workspaceId);
+    workspaceThreads.remove(workspaceId);
+    if (currentWorkspaceId == workspaceId) {
+      currentWorkspaceId = workspaceList.firstOrNull?.id;
+      currentThreadId = null;
+    }
+    _log('WORKSPACE', 'removed workspace $workspaceId (archived ${threads.length} threads)');
+    notifyListeners();
+  }
+
+  /// Archive a thread on the server and remove it from local state.
+  Future<void> archiveThread(String workspaceId, String threadId) async {
+    _log('RPC', '→ thread/archive  threadId=$threadId');
+    try {
+      await _service.archiveThread(threadId);
+      _log('RPC', '← thread/archive OK');
+    } catch (e) {
+      _log('WARN', 'thread/archive failed ($e) — removing locally only');
+    }
+    workspaceThreads[workspaceId]?.removeWhere((t) => t.id == threadId);
+    _threadStates.remove(threadId);
+    if (currentThreadId == threadId) {
+      currentThreadId = null;
+    }
+    notifyListeners();
+  }
+
+  /// Rename a thread on the server and update local state.
+  Future<void> renameThread(String threadId, String newName) async {
+    _log('RPC', '→ thread/name/set  threadId=$threadId  name=$newName');
+    try {
+      await _service.renameThread(threadId, newName);
+      _log('RPC', '← thread/name/set OK');
+    } catch (e) {
+      _log('WARN', 'thread/name/set failed ($e) — updating locally only');
+    }
+    for (final threads in workspaceThreads.values) {
+      for (final t in threads) {
+        if (t.id == threadId) {
+          t.title = newName;
+          break;
+        }
+      }
+    }
+    notifyListeners();
+  }
+
+  void _updateThreadTitle(String threadId, List<ChatMessage> messages) {
+    final firstUser = messages.where((m) => m.role == ChatRole.user).firstOrNull;
+    if (firstUser == null) return;
+    for (final threads in workspaceThreads.values) {
+      for (final t in threads) {
+        if (t.id == threadId) {
+          // Don't overwrite a server-persisted or user-set name.
+          if (t.title != null) return;
+          final runes = firstUser.text.runes.toList();
+          t.title = runes.length > 4
+              ? '${String.fromCharCodes(runes.take(4))}…'
+              : firstUser.text;
+          return;
+        }
+      }
     }
   }
 
