@@ -26,6 +26,7 @@ class _SetupPageState extends State<SetupPage> {
   late final TextEditingController _apiKeyController;
   late final TextEditingController _providerBaseUrlController;
   late final TextEditingController _modelController;
+  late final TextEditingController _cwdController;
   String _authMethod = 'ChatGPT';
   String _approvalPolicy = 'unlessTrusted';
   bool _saving = false;
@@ -48,6 +49,9 @@ class _SetupPageState extends State<SetupPage> {
     _modelController = TextEditingController(
       text: widget.existingConfig?.model ?? '',
     );
+    _cwdController = TextEditingController(
+      text: widget.existingConfig?.cwd ?? '',
+    );
     _authMethod = widget.existingConfig?.authMethod ?? 'ChatGPT';
     _approvalPolicy = widget.existingConfig?.approvalPolicy ?? 'unlessTrusted';
   }
@@ -59,6 +63,7 @@ class _SetupPageState extends State<SetupPage> {
     _apiKeyController.dispose();
     _providerBaseUrlController.dispose();
     _modelController.dispose();
+    _cwdController.dispose();
     super.dispose();
   }
 
@@ -90,6 +95,7 @@ class _SetupPageState extends State<SetupPage> {
           providerBaseUrl: _providerBaseUrlController.text.trim().ifEmpty(null),
           model: _modelController.text.trim().ifEmpty(null),
           approvalPolicy: _approvalPolicy,
+          cwd: _cwdController.text.trim().ifEmpty(null),
         ),
       );
       if (mounted) {
@@ -160,6 +166,16 @@ class _SetupPageState extends State<SetupPage> {
                 labelText: 'Model (optional)',
                 hintText: 'e.g. gpt-4, claude-3-opus',
                 helperText: 'If set, overrides server default for turns you initiate.',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _cwdController,
+              decoration: const InputDecoration(
+                labelText: 'Workspace Path (optional)',
+                hintText: 'e.g. /Users/you/myproject',
+                helperText: 'Working directory passed to thread/start and turn/start.',
                 border: OutlineInputBorder(),
               ),
             ),

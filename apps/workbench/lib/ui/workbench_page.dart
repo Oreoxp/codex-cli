@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 
 import '../controllers/workbench_controller.dart';
 import '../models/runtime_config.dart';
@@ -44,13 +45,11 @@ class WorkbenchPage extends StatefulWidget {
 
 class _WorkbenchPageState extends State<WorkbenchPage> {
   final _promptController = TextEditingController();
-  final _cwdController = TextEditingController(text: '/tmp');
   bool _debugExpanded = false;
 
   @override
   void dispose() {
     _promptController.dispose();
-    _cwdController.dispose();
     super.dispose();
   }
 
@@ -58,10 +57,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     final text = _promptController.text.trim();
     if (text.isEmpty) return;
     _promptController.clear();
-    await widget.controller.startTurn(
-      text,
-      cwd: _cwdController.text.trim().ifEmpty('/tmp'),
-    );
+    await widget.controller.startTurn(text);
   }
 
   @override
@@ -115,39 +111,51 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
               ),
             ],
           ),
-          body: Column(
+          body: Row(
             children: [
-              // ── Connection status bar ─────────────────────────────────────
-              ConnectionPanel(
-                controller: ctrl,
-                defaultEndpoint: widget.runtimeConfig.endpoint,
+              // ── Left workspace/threads panel ──────────────────────────────────
+              Container(
+                width: 200,
+                color: const Color(0xFF151515),
+                child: _WorkspacePanel(controller: ctrl),
               ),
-              const Divider(height: 1, color: Color(0xFF2A2A2A)),
-
-              // ── Chat view (main area) ─────────────────────────────────────
+              // ── Main content area ──────────────────────────────────────────────
               Expanded(
-                child: ChatView(controller: ctrl),
-              ),
+                child: Column(
+                  children: [
+                    // ── Connection status bar ────────────────────────────
+                    ConnectionPanel(
+                      controller: ctrl,
+                      defaultEndpoint: widget.runtimeConfig.endpoint,
+                    ),
+                    const Divider(height: 1, color: Color(0xFF2A2A2A)),
 
-              // ── Approval panel (only when pending) ────────────────────────
-              ApprovalPanel(controller: ctrl),
+                    // ── Chat view (main area) ────────────────────────────
+                    Expanded(
+                      child: ChatView(controller: ctrl),
+                    ),
 
-              // ── Collapsible debug / log panel ─────────────────────────────
-              _DebugPanel(
-                controller: ctrl,
-                expanded: _debugExpanded,
-                onToggle: () =>
-                    setState(() => _debugExpanded = !_debugExpanded),
-              ),
+                    // ── Approval panel ───────────────────────────────────
+                    ApprovalPanel(controller: ctrl),
 
-              const Divider(height: 1, color: Color(0xFF333333)),
+                    // ── Debug panel ──────────────────────────────────────
+                    _DebugPanel(
+                      controller: ctrl,
+                      expanded: _debugExpanded,
+                      onToggle: () =>
+                          setState(() => _debugExpanded = !_debugExpanded),
+                    ),
 
-              // ── Prompt input bar ──────────────────────────────────────────
-              _PromptBar(
-                promptController: _promptController,
-                cwdController: _cwdController,
-                controller: ctrl,
-                onSend: _sendPrompt,
+                    const Divider(height: 1, color: Color(0xFF333333)),
+
+                    // ── Prompt input bar ─────────────────────────────────
+                    _PromptBar(
+                      promptController: _promptController,
+                      controller: ctrl,
+                      onSend: _sendPrompt,
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -257,13 +265,11 @@ class _DiffView extends StatelessWidget {
 
 class _PromptBar extends StatelessWidget {
   final TextEditingController promptController;
-  final TextEditingController cwdController;
   final WorkbenchController controller;
   final VoidCallback onSend;
 
   const _PromptBar({
     required this.promptController,
-    required this.cwdController,
     required this.controller,
     required this.onSend,
   });
@@ -279,34 +285,7 @@ class _PromptBar extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // CWD row
-          Row(
-            children: [
-              const Text(
-                'cwd:',
-                style: TextStyle(fontSize: 11, color: Colors.grey),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: TextField(
-                  controller: cwdController,
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 11,
-                    color: Colors.white70,
-                  ),
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    border: InputBorder.none,
-                    hintText: '/path/to/project',
-                    hintStyle: TextStyle(color: Colors.grey),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          // Prompt row
+          // Prompt row (cwd removed per requirements)
           Row(
             children: [
               Expanded(
@@ -363,6 +342,274 @@ class _PromptBar extends StatelessWidget {
   }
 }
 
-extension on String {
-  String ifEmpty(String fallback) => isEmpty ? fallback : this;
+class _WorkspacePanel extends StatefulWidget {
+  final WorkbenchController controller;
+
+  const _WorkspacePanel({required this.controller});
+
+  @override
+  State<_WorkspacePanel> createState() => _WorkspacePanelState();
+}
+
+class _WorkspacePanelState extends State<_WorkspacePanel> {
+  final Set<String> _expandedIds = {};
+  bool _didAutoExpand = false;
+
+  Future<void> _pickAndCreateWorkspace() async {
+    final selectedPath = await FilePicker.platform.getDirectoryPath();
+    if (selectedPath == null) return;
+    await widget.controller.createWorkspace(selectedPath);
+    final newId = widget.controller.currentWorkspaceId;
+    if (newId != null) {
+      setState(() => _expandedIds.add(newId));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ctrl = widget.controller;
+    // Auto-expand the current workspace on first build so threads are visible.
+    if (!_didAutoExpand && ctrl.currentWorkspaceId != null) {
+      _expandedIds.add(ctrl.currentWorkspaceId!);
+      _didAutoExpand = true;
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // ── New Workspace button ──────────────────────────────────────────
+        InkWell(
+          onTap: _pickAndCreateWorkspace,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            color: const Color(0xFF1A1A1A),
+            child: Row(
+              children: [
+                const Icon(Icons.create_new_folder_outlined, size: 14, color: Colors.white54),
+                const SizedBox(width: 6),
+                const Text(
+                  'New Workspace',
+                  style: TextStyle(fontSize: 11, color: Colors.white54),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const Divider(height: 1, color: Color(0xFF2A2A2A)),
+        // ── Workspace tree ────────────────────────────────────────────────
+        Expanded(
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: ctrl.workspaceList
+                  .map((ws) => _buildWorkspaceGroup(ctrl, ws))
+                  .toList(),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildWorkspaceGroup(WorkbenchController ctrl, Workspace ws) {
+    final isSelected = ctrl.currentWorkspaceId == ws.id;
+    final isExpanded = _expandedIds.contains(ws.id);
+    final threads = ctrl.workspaceThreads[ws.id] ?? [];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Workspace row
+        Container(
+          color: isSelected
+              ? Colors.blue.shade900.withAlpha(80)
+              : Colors.transparent,
+          child: Row(
+            children: [
+              // Arrow + folder + name (tap to expand/collapse; switch workspace only if different)
+              Expanded(
+                child: InkWell(
+                  onTap: () async {
+                    setState(() {
+                      if (isExpanded) {
+                        _expandedIds.remove(ws.id);
+                      } else {
+                        _expandedIds.add(ws.id);
+                      }
+                    });
+                    // Only switch workspace if selecting a different one.
+                    if (ctrl.currentWorkspaceId != ws.id) {
+                      await ctrl.switchWorkspace(ws.id);
+                    }
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+                    child: Row(
+                      children: [
+                        Icon(
+                          isExpanded ? Icons.expand_more : Icons.chevron_right,
+                          size: 14,
+                          color: Colors.white54,
+                        ),
+                        const SizedBox(width: 3),
+                        Icon(
+                          isExpanded ? Icons.folder_open : Icons.folder,
+                          size: 14,
+                          color: isSelected
+                              ? Colors.blue.shade300
+                              : Colors.white54,
+                        ),
+                        const SizedBox(width: 5),
+                        Expanded(
+                          child: Text(
+                            ws.name,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: isSelected
+                                  ? Colors.blue.shade100
+                                  : Colors.white70,
+                              fontWeight: isSelected
+                                  ? FontWeight.w500
+                                  : FontWeight.normal,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              // + button
+              InkWell(
+                onTap: () async {
+                  if (ctrl.currentWorkspaceId != ws.id) {
+                    await ctrl.switchWorkspace(ws.id);
+                  }
+                  setState(() => _expandedIds.add(ws.id));
+                  await ctrl.createWorkspaceThread();
+                },
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4, vertical: 5),
+                  child: Icon(Icons.add, size: 13, color: Colors.white38),
+                ),
+              ),
+              // Delete workspace (not for default)
+              if (ws.id != 'default')
+                InkWell(
+                  onTap: () async {
+                    await ctrl.removeWorkspace(ws.id);
+                    setState(() => _expandedIds.remove(ws.id));
+                  },
+                  child: const Padding(
+                    padding: EdgeInsets.only(right: 6, top: 5, bottom: 5),
+                    child: Icon(Icons.close, size: 12, color: Colors.white24),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        // Thread items
+        if (isExpanded)
+          ...threads.map((t) => _buildThreadItem(ctrl, t, ws.id)),
+      ],
+    );
+  }
+
+  Widget _buildThreadItem(WorkbenchController ctrl, ThreadInfo thread, String workspaceId) {
+    final isSelected = ctrl.currentThreadId == thread.id;
+    final displayText = thread.title ??
+        (thread.id.length > 8 ? '${thread.id.substring(0, 8)}…' : thread.id);
+    final isTitle = thread.title != null;
+    return GestureDetector(
+      onTap: () async => await ctrl.resumeWorkspaceThread(thread.id),
+      onLongPressStart: (details) {
+        _showThreadMenu(context, details.globalPosition, ctrl, thread, workspaceId);
+      },
+      child: Container(
+        color: isSelected
+            ? Colors.amber.shade900.withAlpha(80)
+            : Colors.transparent,
+        padding: const EdgeInsets.only(left: 30, right: 8, top: 4, bottom: 4),
+        child: Row(
+          children: [
+            Icon(
+              Icons.insert_drive_file_outlined,
+              size: 12,
+              color: isSelected ? Colors.amber.shade200 : Colors.grey.shade600,
+            ),
+            const SizedBox(width: 5),
+            Expanded(
+              child: Text(
+                displayText,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: isSelected ? Colors.amber.shade100 : Colors.grey,
+                  fontFamily: isTitle ? null : 'monospace',
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showThreadMenu(
+    BuildContext context,
+    Offset position,
+    WorkbenchController ctrl,
+    ThreadInfo thread,
+    String workspaceId,
+  ) {
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(position.dx, position.dy, position.dx, position.dy),
+      color: const Color(0xFF252525),
+      items: [
+        const PopupMenuItem(value: 'rename', child: Text('Rename', style: TextStyle(fontSize: 12))),
+        const PopupMenuItem(value: 'delete', child: Text('Delete', style: TextStyle(fontSize: 12, color: Colors.redAccent))),
+      ],
+    ).then((value) {
+      if (value == 'rename') {
+        _showRenameDialog(context, ctrl, thread);
+      } else if (value == 'delete') {
+        ctrl.archiveThread(workspaceId, thread.id);
+      }
+    });
+  }
+
+  void _showRenameDialog(BuildContext context, WorkbenchController ctrl, ThreadInfo thread) {
+    final textController = TextEditingController(text: thread.title ?? '');
+    showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF252525),
+        title: const Text('Rename Thread', style: TextStyle(fontSize: 14)),
+        content: TextField(
+          controller: textController,
+          autofocus: true,
+          style: const TextStyle(fontSize: 13),
+          decoration: const InputDecoration(
+            hintText: 'Thread name',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, textController.text.trim()),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    ).then((newName) {
+      if (newName != null && newName.isNotEmpty) {
+        ctrl.renameThread(thread.id, newName);
+      }
+    });
+  }
 }

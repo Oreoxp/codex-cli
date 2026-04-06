@@ -68,6 +68,7 @@ class ApprovalRequest {
   final List<String>? command;
   final String? cwd;
   final String? reason;
+  final String? diffSnapshot; // captured lastTurnDiff at approval creation time
 
   const ApprovalRequest({
     required this.requestId,
@@ -78,6 +79,7 @@ class ApprovalRequest {
     this.command,
     this.cwd,
     this.reason,
+    this.diffSnapshot,
   });
 
   String get commandSummary =>

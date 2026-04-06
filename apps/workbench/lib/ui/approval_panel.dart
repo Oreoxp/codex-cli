@@ -15,9 +15,34 @@ class ApprovalPanel extends StatelessWidget {
 
     final isCmd = approval.kind == 'commandExecution';
     final label = isCmd ? 'Execute command?' : 'Apply file change?';
-    final detail = isCmd
-        ? approval.commandSummary
-        : 'File change  (see diff)';
+
+    // For fileChange, build detail from diff or fallback text.
+    String detail;
+    if (!isCmd) {
+      final diff = approval.diffSnapshot;
+      if (diff != null && diff.isNotEmpty) {
+        // Extract changed file paths from unified diff headers.
+        final paths = <String>[];
+        for (final line in diff.split('\n')) {
+          if (line.startsWith('+++ b/')) {
+            final path = line.substring(6).trim();
+            if (path.isNotEmpty && path != '/dev/null') paths.add(path);
+          } else if (line.startsWith('+++ ') && !line.startsWith('+++ b/')) {
+            final path = line.substring(4).trim();
+            if (path.isNotEmpty && path != '/dev/null') paths.add(path);
+          }
+        }
+        if (paths.isNotEmpty) {
+          detail = paths.join('\n');
+        } else {
+          detail = diff.length > 400 ? '${diff.substring(0, 400)}…' : diff;
+        }
+      } else {
+        detail = 'File change (no diff available)';
+      }
+    } else {
+      detail = approval.commandSummary;
+    }
 
     return Card(
       color: Colors.yellow.shade900,

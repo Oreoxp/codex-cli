@@ -16,6 +16,9 @@ class RuntimeConfig {
   /// If not set, defaults to 'unlessTrusted'.
   final String? approvalPolicy;
 
+  /// Local workspace path (cwd) passed to thread/start and turn/start.
+  final String? cwd;
+
   const RuntimeConfig({
     required this.provider,
     required this.endpoint,
@@ -24,6 +27,7 @@ class RuntimeConfig {
     this.providerBaseUrl,
     this.model,
     this.approvalPolicy,
+    this.cwd,
   });
 
   Map<String, dynamic> toJson() => {
@@ -34,6 +38,7 @@ class RuntimeConfig {
         'providerBaseUrl': providerBaseUrl,
         'model': model,
         'approvalPolicy': approvalPolicy,
+        'cwd': cwd,
       };
 
   factory RuntimeConfig.fromJson(Map<String, dynamic> json) => RuntimeConfig(
@@ -44,5 +49,6 @@ class RuntimeConfig {
         providerBaseUrl: json['providerBaseUrl'] as String?,
         model: json['model'] as String?,
         approvalPolicy: json['approvalPolicy'] as String?,
+        cwd: json['cwd'] as String?,
       );
 }

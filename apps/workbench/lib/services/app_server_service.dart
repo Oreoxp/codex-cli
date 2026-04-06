@@ -171,6 +171,40 @@ class AppServerService {
     _channel = null;
   }
 
+  /// List threads, optionally filtered by working directory.
+  /// If [cwd] is null, returns all threads regardless of directory.
+  Future<List<dynamic>> listThreads([String? cwd]) async {
+    final params = <String, dynamic>{};
+    if (cwd != null) params['cwd'] = cwd;
+    final result = await sendRequest('thread/list', params);
+    final m = result as Map<String, dynamic>;
+    // app-server returns the list under 'data' (not 'threads')
+    return m['data'] as List<dynamic>? ?? m['threads'] as List<dynamic>? ?? [];
+  }
+
+  /// Resume an existing thread by ID.
+  Future<dynamic> resumeThread(String threadId) async {
+    return await sendRequest('thread/resume', {'threadId': threadId});
+  }
+
+  /// Read thread details including turns history.
+  Future<dynamic> readThread(String threadId, {bool includeTurns = false}) async {
+    return await sendRequest('thread/read', {
+      'threadId': threadId,
+      'includeTurns': includeTurns,
+    });
+  }
+
+  /// Archive (soft-delete) a thread. It won't appear in thread/list afterwards.
+  Future<void> archiveThread(String threadId) async {
+    await sendRequest('thread/archive', {'threadId': threadId});
+  }
+
+  /// Rename a thread on the server.
+  Future<void> renameThread(String threadId, String name) async {
+    await sendRequest('thread/name/set', {'threadId': threadId, 'name': name});
+  }
+
   Future<void> disconnect() async {
     _state = AppServerConnectionState.disconnected;
     await _channel?.sink.close();
