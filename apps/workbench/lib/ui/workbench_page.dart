@@ -223,7 +223,7 @@ class _DebugPanel extends StatelessWidget {
             color: const Color(0xFF111111),
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(8),
-              child: _DiffView(diff: diff),
+              child: DiffView(diff: diff),
             ),
           ),
       ],
@@ -231,9 +231,9 @@ class _DebugPanel extends StatelessWidget {
   }
 }
 
-class _DiffView extends StatelessWidget {
+class DiffView extends StatelessWidget {
   final String diff;
-  const _DiffView({required this.diff});
+  const DiffView({super.key, required this.diff});
 
   @override
   Widget build(BuildContext context) {

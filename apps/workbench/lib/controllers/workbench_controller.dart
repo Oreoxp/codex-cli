@@ -85,6 +85,8 @@ class WorkbenchController extends ChangeNotifier {
   String? get lastTurnDiff => currentThreadState?.lastTurnDiff;
   String? get lastAgentMessage => currentThreadState?.lastAgentMessage;
   String get streamingText => currentThreadState?.streamingText ?? '';
+  List<ItemState> get items => currentThreadState?.items ?? [];
+  Map<int, List<ItemState>> get messageItems => currentThreadState?.messageItems ?? {};
 
   WorkbenchController(this._service, {this.userProfile, this.runtimeConfig}) {
     // Initialize with default workspace
@@ -380,16 +382,22 @@ class WorkbenchController extends ChangeNotifier {
     try {
       final result = await _service.readThread(threadId, includeTurns: true);
       final m = result as Map<String, dynamic>;
-      // app-server wraps the thread under result['thread']
       final threadObj = m['thread'] as Map<String, dynamic>? ?? m;
       final turns = threadObj['turns'] as List<dynamic>? ?? [];
       for (final turn in turns) {
         final items = (turn as Map<String, dynamic>)['items'] as List<dynamic>? ?? [];
+        final itemTypes = items.map((i) => (i as Map<String, dynamic>)['type']).toList();
+        _log('BACKFILL', 'turn items: $itemTypes');
+
+        // Collect reasoning/cmd items for this turn.
+        final turnItemStates = <ItemState>[];
+
         for (final item in items) {
           final m = item as Map<String, dynamic>;
           final type = m['type'] as String?;
+          final id = m['id'] as String? ?? '';
+
           if (type == 'userMessage') {
-            // userMessage stores text in content: [{"type":"text","text":"..."}]
             String? text;
             if (m['content'] is List) {
               final parts = (m['content'] as List)
@@ -401,7 +409,6 @@ class WorkbenchController extends ChangeNotifier {
             } else if (m['content'] is String) {
               text = m['content'] as String;
             }
-            // Fallback: top-level text field
             if ((text == null || text.isEmpty) && m['text'] is String) {
               text = m['text'] as String;
             }
@@ -413,13 +420,10 @@ class WorkbenchController extends ChangeNotifier {
               ));
             }
           } else if (type == 'agentMessage') {
-            // agentMessage stores text in a top-level 'text' field,
-            // NOT inside 'content' (which is used by userMessage).
             String? text;
             if (m['text'] is String) {
               text = m['text'] as String;
             }
-            // Fallback: also check content array (older format)
             if ((text == null || text.isEmpty) && m['content'] is List) {
               final parts = (m['content'] as List)
                   .whereType<Map>()
@@ -432,17 +436,108 @@ class WorkbenchController extends ChangeNotifier {
               text = m['content'] as String;
             }
             if (text != null && text.isNotEmpty) {
+              // Add agentMessage to timeline items.
+              final itemState = ItemState(id: id, type: 'agentMessage');
+              itemState.status = 'completed';
+              itemState.completedAt = DateTime.now();
+              itemState.buffer.write(text);
+              turnItemStates.add(itemState);
+
               state.chatMessages.add(ChatMessage(
                 timestamp: DateTime.now(),
                 role: ChatRole.assistant,
                 text: text,
               ));
+              // Associate the full timeline with this assistant message.
+              if (turnItemStates.isNotEmpty) {
+                state.messageItems[state.chatMessages.length - 1] =
+                    List.of(turnItemStates);
+              }
             }
+          } else if (type == 'reasoning') {
+            final itemState = ItemState(id: id, type: 'reasoning');
+            itemState.status = 'completed';
+            itemState.completedAt = DateTime.now();
+            final summary = m['summary'];
+            if (summary is List) {
+              for (final part in summary) {
+                if (part is Map && part['text'] is String) {
+                  itemState.buffer.write(part['text'] as String);
+                } else if (part is String) {
+                  itemState.buffer.write(part);
+                }
+              }
+            } else if (summary is String) {
+              itemState.buffer.write(summary);
+            }
+            if (itemState.content.isEmpty) {
+              final content = m['content'];
+              if (content is List) {
+                for (final part in content) {
+                  if (part is Map && part['text'] is String) {
+                    itemState.buffer.write(part['text'] as String);
+                  } else if (part is String) {
+                    itemState.buffer.write(part);
+                  }
+                }
+              } else if (content is String) {
+                itemState.buffer.write(content);
+              }
+            }
+            // Restore raw reasoning from content field into rawReasoningBuffer.
+            final rawContent = m['content'];
+            if (rawContent is List) {
+              for (final part in rawContent) {
+                if (part is Map && part['text'] is String) {
+                  itemState.rawReasoningBuffer.write(part['text'] as String);
+                } else if (part is String) {
+                  itemState.rawReasoningBuffer.write(part);
+                }
+              }
+            } else if (rawContent is String) {
+              itemState.rawReasoningBuffer.write(rawContent);
+            }
+            if (itemState.content.isNotEmpty || itemState.rawReasoning.isNotEmpty) {
+              turnItemStates.add(itemState);
+            }
+          } else if (type == 'commandExecution') {
+            final itemState = ItemState(id: id, type: 'commandExecution');
+            itemState.status = m['status'] as String? ?? 'completed';
+            itemState.completedAt = DateTime.now();
+            final backfillCmd = m['command'];
+            if (backfillCmd is List) {
+              itemState.command = backfillCmd.cast<String>();
+            } else if (backfillCmd is String) {
+              itemState.command = [backfillCmd];
+            }
+            final output = m['aggregatedOutput'] as String?;
+            if (output != null) {
+              itemState.buffer.write(output);
+            }
+            turnItemStates.add(itemState);
+          } else if (type == 'fileChange') {
+            final itemState = ItemState(id: id, type: 'fileChange');
+            itemState.status = m['status'] as String? ?? 'completed';
+            itemState.completedAt = DateTime.now();
+            final changes = m['changes'] as List?;
+            if (changes != null) {
+              itemState.fileChanges = changes.cast<Map<String, dynamic>>();
+            }
+            turnItemStates.add(itemState);
           }
         }
       }
-      _log('RPC', '← thread/read backfill done  turns=${turns.length}  messages=${state.chatMessages.length}');
-      // Update the thread's display title from the first user message.
+
+      // Also populate live items from the last turn's data for current-turn display.
+      state.items.clear();
+      final lastMsgIdx = state.chatMessages.length - 1;
+      if (lastMsgIdx >= 0 && state.messageItems.containsKey(lastMsgIdx)) {
+        state.items.addAll(state.messageItems[lastMsgIdx]!);
+      }
+
+      _log('RPC', '← thread/read backfill done  turns=${turns.length}  '
+          'messages=${state.chatMessages.length}  '
+          'messagesWithItems=${state.messageItems.length}');
       _updateThreadTitle(threadId, state.chatMessages);
       notifyListeners();
     } catch (e, st) {
@@ -467,6 +562,7 @@ class WorkbenchController extends ChangeNotifier {
       final result = await _service.sendRequest('thread/start', {
         'cwd': cwd,
         'approvalPolicy': policy,
+        'sandbox': 'workspace-write',
       });
       currentThreadId =
           (result as Map<String, dynamic>)['thread']['id'] as String;
@@ -506,6 +602,7 @@ class WorkbenchController extends ChangeNotifier {
     state.lastTurnDiff = null;
     state.agentMessageBuffer.clear();
     state.agentMessageItemId = null;
+    state.items.clear();
 
     // Add user message to chat view immediately.
     state.chatMessages.add(ChatMessage(
@@ -527,6 +624,7 @@ class WorkbenchController extends ChangeNotifier {
         {'type': 'text', 'text': prompt}
       ],
       'approvalPolicy': policy,
+      'sandboxPolicy': {'type': 'workspaceWrite'},
       if (effectiveCwd != '/') 'cwd': effectiveCwd,
       if (model != null) 'model': model,
     };
@@ -691,6 +789,14 @@ class WorkbenchController extends ChangeNotifier {
               role: ChatRole.assistant,
               text: state.lastAgentMessage!,
             ));
+            // Snapshot all items for this assistant message (full timeline).
+            final msgIdx = state.chatMessages.length - 1;
+            final snapshot = state.items.where(
+              (i) => i.type == 'reasoning' || i.type == 'commandExecution' || i.type == 'agentMessage' || i.type == 'fileChange',
+            ).toList();
+            if (snapshot.isNotEmpty) {
+              state.messageItems[msgIdx] = snapshot;
+            }
             state.agentMessageBuffer.clear();
             state.agentMessageItemId = null;
           }
@@ -714,13 +820,53 @@ class WorkbenchController extends ChangeNotifier {
 
       case 'item/started':
         final item = p['item'] as Map<String, dynamic>?;
-        _log('ITEM', 'item/started  type=${item?['type']}  id=${item?['id']}  '
+        final itemId = item?['id'] as String?;
+        final itemType = item?['type'] as String? ?? 'unknown';
+        if (itemId != null) {
+          final threadId = p['threadId'] as String? ?? currentThreadId ?? '';
+          final state = _getOrCreateThreadState(threadId);
+          final itemState = ItemState(id: itemId, type: itemType);
+          if (itemType == 'commandExecution') {
+            final rawCmd = item?['command'];
+            if (rawCmd is List) {
+              itemState.command = rawCmd.cast<String>();
+            } else if (rawCmd is String) {
+              itemState.command = [rawCmd];
+            }
+          } else if (itemType == 'fileChange') {
+            final changes = item?['changes'] as List?;
+            if (changes != null) {
+              itemState.fileChanges = changes.cast<Map<String, dynamic>>();
+            }
+          }
+          state.items.add(itemState);
+        }
+        _log('ITEM', 'item/started  type=$itemType  id=$itemId  '
             'detail=${_itemDetail(item)}');
 
       case 'item/completed':
         final item = p['item'] as Map<String, dynamic>?;
+        final completedId = item?['id'] as String?;
+        if (completedId != null) {
+          final threadId = p['threadId'] as String? ?? currentThreadId ?? '';
+          final state = _getOrCreateThreadState(threadId);
+          for (final is_ in state.items) {
+            if (is_.id == completedId) {
+              is_.status = item?['status'] as String? ?? 'completed';
+              is_.completedAt = DateTime.now();
+              // Capture fileChanges on completion if not set at start.
+              if (is_.type == 'fileChange' && is_.fileChanges == null) {
+                final changes = item?['changes'] as List?;
+                if (changes != null) {
+                  is_.fileChanges = changes.cast<Map<String, dynamic>>();
+                }
+              }
+              break;
+            }
+          }
+        }
         _log('ITEM',
-            'item/completed  type=${item?['type']}  id=${item?['id']}  '
+            'item/completed  type=${item?['type']}  id=$completedId  '
             'status=${item?['status']}  detail=${_itemDetail(item)}');
 
       case 'item/agentMessage/delta':
@@ -734,6 +880,15 @@ class WorkbenchController extends ChangeNotifier {
             _log('STREAM', 'agentMessage stream start  itemId=$itemId');
           }
           state.agentMessageBuffer.write(delta);
+          // Also accumulate into the ItemState for timeline rendering.
+          if (itemId != null) {
+            for (final is_ in state.items) {
+              if (is_.id == itemId) {
+                is_.buffer.write(delta);
+                break;
+              }
+            }
+          }
           // Only log every ~200 chars to avoid flooding.
           if (state.agentMessageBuffer.length % 200 < delta.length) {
             _log('STREAM',
@@ -745,10 +900,71 @@ class WorkbenchController extends ChangeNotifier {
 
       case 'item/commandExecution/outputDelta':
         final output = p['output'] as String? ?? '';
-        if (output.trim().isNotEmpty) {
-          _log('CMD', 'outputDelta  itemId=${p['itemId']}\n  ${output.trimRight()}');
+        final cmdItemId = p['itemId'] as String?;
+        if (cmdItemId != null) {
+          final state = currentThreadState;
+          if (state != null) {
+            for (final is_ in state.items) {
+              if (is_.id == cmdItemId) {
+                is_.buffer.write(output);
+                break;
+              }
+            }
+          }
         }
-        return; // Skip notifyListeners — no UI state changed.
+        if (output.trim().isNotEmpty) {
+          _log('CMD', 'outputDelta  itemId=$cmdItemId\n  ${output.trimRight()}');
+        }
+        // Still notify so UI updates with new output.
+        break;
+
+      case 'item/reasoning/summaryTextDelta':
+        final summaryDelta = p['delta'] as String? ?? '';
+        final reasoningItemId = p['itemId'] as String?;
+        if (reasoningItemId != null) {
+          final state = currentThreadState;
+          if (state != null) {
+            for (final is_ in state.items) {
+              if (is_.id == reasoningItemId) {
+                is_.buffer.write(summaryDelta);
+                break;
+              }
+            }
+          }
+        }
+        break;
+
+      case 'item/reasoning/textDelta':
+        final rawDelta = p['delta'] as String? ?? '';
+        final rawReasoningItemId = p['itemId'] as String?;
+        if (rawReasoningItemId != null) {
+          final state = currentThreadState;
+          if (state != null) {
+            for (final is_ in state.items) {
+              if (is_.id == rawReasoningItemId) {
+                is_.rawReasoningBuffer.write(rawDelta);
+                break;
+              }
+            }
+          }
+        }
+        break;
+
+      case 'item/fileChange/outputDelta':
+        final fcDelta = p['delta'] as String? ?? p['output'] as String? ?? '';
+        final fcItemId = p['itemId'] as String?;
+        if (fcItemId != null) {
+          final state = currentThreadState;
+          if (state != null) {
+            for (final is_ in state.items) {
+              if (is_.id == fcItemId) {
+                is_.buffer.write(fcDelta);
+                break;
+              }
+            }
+          }
+        }
+        break;
 
       case 'thread/name/updated':
         final threadId = p['threadId'] as String?;
@@ -808,7 +1024,11 @@ class WorkbenchController extends ChangeNotifier {
         threadId: p['threadId'] as String? ?? '',
         turnId: p['turnId'] as String? ?? '',
         itemId: p['itemId'] as String?,
-        command: (p['command'] as List?)?.cast<String>(),
+        command: p['command'] is List
+            ? (p['command'] as List).cast<String>()
+            : p['command'] is String
+                ? [p['command'] as String]
+                : null,
         cwd: p['cwd'] as String?,
         reason: p['reason'] as String?,
         diffSnapshot: state.lastTurnDiff,
@@ -940,8 +1160,10 @@ class WorkbenchController extends ChangeNotifier {
     final type = item['type'] as String? ?? '?';
     switch (type) {
       case 'commandExecution':
-        final cmd =
-            (item['command'] as List?)?.cast<String>().join(' ') ?? '';
+        final rawCmd = item['command'];
+        final cmd = rawCmd is List
+            ? rawCmd.cast<String>().join(' ')
+            : rawCmd is String ? rawCmd : '';
         return 'cmd="${_truncate(cmd, 80)}"';
       case 'fileChange':
         final changes = item['changes'] as List?;
