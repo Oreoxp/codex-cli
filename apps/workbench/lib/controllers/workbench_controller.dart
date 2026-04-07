@@ -455,26 +455,37 @@ class WorkbenchController extends ChangeNotifier {
                   );
                   blocks.add(rb);
                 } else if (is_.type == 'commandExecution') {
-                  final cmdName = is_.command?.join(' ') ?? 'command';
-                  final isError = is_.status == 'failed' || is_.status == 'declined';
+                  final cmdText = is_.command?.join(' ') ?? '';
+                  final isError = is_.status == 'failed' ||
+                      is_.status == 'declined' ||
+                      is_.status == 'error';
                   blocks.add(ToolCallBlock(
                     callId: is_.id,
-                    toolName: cmdName,
-                    arguments: is_.content,
+                    toolType: ToolType.commandExecution,
+                    title: cmdText.isNotEmpty ? 'Command: $cmdText' : 'Command',
+                    output: is_.content,
                     status: isError ? ToolStatus.error : ToolStatus.success,
                   ));
                 } else if (is_.type == 'fileChange') {
                   final paths = is_.fileChanges
                       ?.map((c) => c['path'] as String? ?? '')
                       .where((p) => p.isNotEmpty)
-                      .join(', ') ?? 'file change';
+                      .join(', ') ?? '';
+                  final isError = is_.status == 'failed' ||
+                      is_.status == 'declined' ||
+                      is_.status == 'error';
+                  final changes = is_.fileChanges
+                      ?.map((c) => FileChange.fromMap(c))
+                      .where((fc) => fc.path.isNotEmpty)
+                      .toList();
                   blocks.add(ToolCallBlock(
                     callId: is_.id,
-                    toolName: 'fileChange: $paths',
-                    arguments: is_.content,
-                    status: is_.status == 'failed' || is_.status == 'declined'
-                        ? ToolStatus.error
-                        : ToolStatus.success,
+                    toolType: ToolType.fileChange,
+                    title: 'File changes',
+                    detail: paths,
+                    output: is_.content,
+                    changes: changes,
+                    status: isError ? ToolStatus.error : ToolStatus.success,
                   ));
                 } else if (is_.type == 'agentMessage') {
                   blocks.add(TextBlock(text: is_.content));
@@ -898,8 +909,14 @@ class WorkbenchController extends ChangeNotifier {
               );
               state.chatMessages.add(state.streamingMessage!);
             }
-            final toolName = itemState.command?.join(' ') ?? 'command';
-            state.streamingMessage!.startToolCall(itemId, toolName);
+            final cmdText = itemState.command?.join(' ') ?? '';
+            final cwd = item?['cwd'] as String? ?? '';
+            state.streamingMessage!.startToolCall(
+              itemId,
+              toolType: ToolType.commandExecution,
+              title: cmdText.isNotEmpty ? 'Command: $cmdText' : 'Command',
+              detail: cwd,
+            );
           } else if (itemType == 'fileChange') {
             final changes = item?['changes'] as List?;
             if (changes != null) {
@@ -916,8 +933,13 @@ class WorkbenchController extends ChangeNotifier {
             final paths = itemState.fileChanges
                 ?.map((c) => c['path'] as String? ?? '')
                 .where((p) => p.isNotEmpty)
-                .join(', ') ?? 'file change';
-            state.streamingMessage!.startToolCall(itemId, 'fileChange: $paths');
+                .join(', ') ?? 'Pending changes';
+            state.streamingMessage!.startToolCall(
+              itemId,
+              toolType: ToolType.fileChange,
+              title: 'File changes',
+              detail: paths,
+            );
           } else if (itemType == 'reasoning') {
             // Block-based: start a ReasoningBlock.
             if (state.streamingMessage == null) {
@@ -953,9 +975,33 @@ class WorkbenchController extends ChangeNotifier {
               }
               // Block-based: finalize the ToolCallBlock.
               if (is_.type == 'commandExecution' || is_.type == 'fileChange') {
-                final isError = is_.status != 'completed';
-                final result = is_.content.isNotEmpty ? is_.content : null;
-                state.streamingMessage?.finishToolCall(completedId, result, isError: isError);
+                // "failed", "declined", "error" → error; anything else → success.
+                final isError = is_.status == 'failed' ||
+                    is_.status == 'declined' ||
+                    is_.status == 'error';
+                // Prefer server-reported aggregatedOutput over streaming buffer.
+                final aggregatedOutput = item?['aggregatedOutput'] as String?;
+                final durationMs =
+                    item?['durationMs'] as int? ?? item?['duration_ms'] as int?;
+                // Build normalised FileChange list for fileChange items.
+                List<FileChange>? finalChanges;
+                if (is_.type == 'fileChange') {
+                  final rawChanges = item?['changes'] as List? ?? is_.fileChanges;
+                  if (rawChanges != null) {
+                    finalChanges = rawChanges
+                        .whereType<Map<String, dynamic>>()
+                        .map(FileChange.fromMap)
+                        .where((fc) => fc.path.isNotEmpty)
+                        .toList();
+                  }
+                }
+                state.streamingMessage?.finishToolCall(
+                  completedId,
+                  aggregatedOutput: aggregatedOutput,
+                  isError: isError,
+                  durationMs: durationMs,
+                  changes: finalChanges,
+                );
               }
               // Block-based: finalize the ReasoningBlock.
               if (is_.type == 'reasoning') {
@@ -1017,8 +1063,10 @@ class WorkbenchController extends ChangeNotifier {
         }
 
       case 'item/commandExecution/outputDelta':
-        final output = p['output'] as String? ?? '';
-        final cmdItemId = p['itemId'] as String?;
+        // Protocol field is "delta", not "output".
+        // Reference: CodexMonitor useAppServerEvents.ts line 539.
+        final output = p['delta'] as String? ?? '';
+        final cmdItemId = p['itemId'] as String? ?? p['item_id'] as String?;
         if (cmdItemId != null) {
           final state = currentThreadState;
           if (state != null) {
@@ -1028,8 +1076,7 @@ class WorkbenchController extends ChangeNotifier {
                 break;
               }
             }
-            // Block-based: stream output into the ToolCallBlock args.
-            state.streamingMessage?.updateToolCallArgs(cmdItemId, output);
+            state.streamingMessage?.appendToolOutput(cmdItemId, output);
           }
         }
         if (output.trim().isNotEmpty) {
@@ -1083,8 +1130,9 @@ class WorkbenchController extends ChangeNotifier {
         break;
 
       case 'item/fileChange/outputDelta':
-        final fcDelta = p['delta'] as String? ?? p['output'] as String? ?? '';
-        final fcItemId = p['itemId'] as String?;
+        // Protocol field is "delta". Reference: CodexMonitor line 559.
+        final fcDelta = p['delta'] as String? ?? '';
+        final fcItemId = p['itemId'] as String? ?? p['item_id'] as String?;
         if (fcItemId != null) {
           final state = currentThreadState;
           if (state != null) {
@@ -1094,8 +1142,7 @@ class WorkbenchController extends ChangeNotifier {
                 break;
               }
             }
-            // Block-based: stream into the ToolCallBlock args.
-            state.streamingMessage?.updateToolCallArgs(fcItemId, fcDelta);
+            state.streamingMessage?.appendToolOutput(fcItemId, fcDelta);
           }
         }
         break;

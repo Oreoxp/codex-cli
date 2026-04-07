@@ -1,0 +1,3 @@
+[submodule "reference/CodexMonitor"]
+	path = reference/CodexMonitor
+	url = https://github.com/Oreoxp/CodexMonitor.git

@@ -4,9 +4,10 @@
 
 ---
 
-## 0. 当前里程碑状态（v0.1 · 2026-04-05）
+## 0. 当前里程碑状态（v0.2 · 2026-04-07）
 
 **Milestone 1 已完成**：最小可运行闭环已跑通。
+**Milestone 2 进行中**：UI 架构升级——Blocks 机制 + 工具调用可视化。
 
 | 项目 | 状态 |
 |------|------|
@@ -16,7 +17,9 @@
 | 三个 smoke 脚本（baseline / auth / config） | ✅ 已建立 |
 | 真实联调（千问，支持 OpenAI Responses API） | ✅ 联调通过 |
 | 前端结构化日志（debugPrint，标签化，终端可见） | ✅ 已上线 |
-| Dart/Flutter 测试骨架 | ✅ 最小骨架已建 |
+| CodexMonitor 参考库引入（reference/CodexMonitor submodule） | ✅ 已引入 |
+| Blocks 机制（TextBlock / ToolCallBlock 数据模型） | 🚧 进行中 |
+| 工具调用折叠 UI（ExpansionTile 胶囊）| 🚧 进行中 |
 
 **当前可用 provider**：阿里云千问（`qwen` 系列）——支持 OpenAI Responses API 路径（`/v1/responses`），经真实联调验证可用。
 
@@ -26,33 +29,64 @@
 
 ## 1. 项目愿景
 
-**小螃蟹**（OpenCrab）不是一个 Codex 的简单壳子，而是一个**可控、可审查、可扩展的本地 Agent Workbench**。
+**小螃蟹**（OpenCrab）是一个**基于 Flutter 的本地 Agent 工作台（Workbench）**，底层 Runtime 坚决使用 `codex-rs/app-server`。
 
-- **名称来源**：相对于 OpenClaw（大龙虾/爪子）的隐喻，小螃蟹做的是自己的本地 Agent 工作台方向，更轻、更灵活、更可控。
-- **当前阶段**：借用 Codex app-server 作为 runtime 接入基座，Flutter Workbench 作为 UI 外壳，快速建立最小可运行闭环。
-- **长期方向**（runtime + UI 只是基座，不是终局）：
-  - **任务执行可视化**：让用户看清 Agent 每一步在做什么
-  - **审批与安全**：命令执行、文件变更的可审查审批流
-  - **Diff 审查**：每次 turn 产生的代码变更清晰可见、可接受/拒绝
-  - **Skills / Workflows**：可组合的任务流程
-  - **Provider 解耦**：不绑定 OpenAI，支持 DeepSeek、本地模型、拼车 API 等
-  - **MCP 扩展**：原生支持 Model Context Protocol 工具链
+**终极愿景：私人数字公司。**  
+用户一键拉起具备不同技能边界的 Agent"员工"，处理本地文件、执行任务、审批变更——整个过程完全透明可控，运行在本地，不依赖云端。
+
+**长期方向**：
+- **任务执行可视化**：让用户看清 Agent 每一步在做什么（工具调用、文件变更、命令执行）
+- **审批与安全**：命令执行、文件变更的可审查审批流，高危操作独立弹出面板
+- **Diff 审查**：每次 turn 产生的代码变更清晰可见、可接受/拒绝
+- **Skills / Workflows**：可组合的任务流程
+- **Provider 解耦**：不绑定 OpenAI，支持 DeepSeek、本地模型、拼车 API 等
+- **MCP 扩展**：原生支持 Model Context Protocol 工具链
 
 ---
 
-## 2. 当前产品定位
+## 2. 组件定位
 
 | 组件 | 定位 | 优先级 |
 |------|------|--------|
 | `apps/workbench/` | **主线产品**，Flutter UI，用于真实使用 | ★★★ 最高 |
-| `codex-rs/app-server` | **当前 runtime 接入基座**，WebSocket 后端 | ★★★ 依赖 |
-| `little-crab-ui/` | **调试/开发工具**，不是当前主产品主线 | ★☆☆ 辅助 |
+| `codex-rs/app-server` | **唯一 Runtime 基座**，WebSocket 后端，不可替换 | ★★★ 依赖 |
+| `reference/CodexMonitor` | **标准参考实现**（React/Tauri），遇到 API 疑问必查 | ★★★ 参考 |
+| `little-crab-ui/` | 调试/开发工具，非主线 | ★☆☆ 辅助 |
 
-**关键判断**：`little-crab-ui` 是开发调试辅助，不要把它当主产品推进。所有主线功能都在 `apps/workbench`。
+**关键判断**：
+- `little-crab-ui` 是开发调试辅助，不要把它当主产品推进。所有主线功能都在 `apps/workbench`。
+- `codex-rs/app-server` 是唯一 Runtime，不考虑替换。
+- `reference/CodexMonitor` 是参考指南针，不是要复刻的产品。
 
 ---
 
-## 3. 当前架构
+## 3. 核心参考库：CodexMonitor
+
+**仓库位置**：`reference/CodexMonitor`（git submodule，来自 `Dimillian/CodexMonitor`）
+
+### 使用法则（强制）
+
+> **遇到不懂的 Codex API 交互、不知道传什么参数、不确定协议细节时：禁止靠猜测或幻觉！必须先查 `reference/CodexMonitor` 的源码是怎么处理的，再用 Flutter/Dart 降维复刻。**
+
+CodexMonitor 是用 React/TypeScript + Tauri 写的，但它和我们用的是同一套 `codex-rs/app-server` WebSocket 协议。它是目前最权威、最及时的协议参考实现。
+
+**典型查阅场景**：
+- 不确定某个 RPC 方法的参数结构（如 `turn/start` 的完整 payload）
+- 不清楚某个事件（如 `agentMessage` delta）的数据格式
+- 不知道 `initialize` 握手后应该发什么
+- 不确定 approval 的响应格式
+
+**查阅方法**：
+```bash
+# 搜索关键词
+grep -r "turn/start" reference/CodexMonitor/src/
+grep -r "agentMessage" reference/CodexMonitor/src/
+grep -r "approval" reference/CodexMonitor/src/
+```
+
+---
+
+## 4. 架构
 
 ```
 Flutter Workbench (apps/workbench)
@@ -75,7 +109,52 @@ codex_core (LLM 调用 / 本地执行 / MCP)
 
 ---
 
-## 4. 当前已实现状态
+## 5. UI 设计原则（1.0 阶段）
+
+这是本阶段最重要的架构约束，所有 UI 相关改动必须遵守。
+
+### 原则一：数据与 UI 分离
+
+**禁止**将 API 吐出的 JSON 和工具调用栈直接拼接成一个巨大的纯文本 String 塞进聊天气泡。这会导致乱码、不可控的格式混乱，以及无法做可视化。
+
+### 原则二：时间线切片（Blocks 机制）
+
+每条 ChatMessage 必须被拆分为独立的 Block 序列：
+
+```
+ChatMessage
+  └─ blocks: List<MessageBlock>
+       ├─ TextBlock        ← 普通对话文本（用户可见的回答）
+       └─ ToolCallBlock    ← 工具调用过程（bash、file_read 等）
+            ├─ toolName: String
+            ├─ input: Map
+            ├─ output: String?
+            └─ status: loading | success | error
+```
+
+**TextBlock** 负责渲染 Markdown 对话内容。  
+**ToolCallBlock** 负责渲染工具调用过程，默认折叠，仅展示状态标志。
+
+### 原则三：工具调用折叠可视化
+
+所有后台命令（`bash`、`file_read`、`file_write` 等）的执行过程**必须折叠隐藏**在 UI 中。
+
+- 使用 `ExpansionTile` 或小胶囊组件实现折叠
+- 收起状态只显示：工具图标 + 工具名 + 状态（Loading/Success/Error）
+- 展开后才显示输入参数和执行输出
+- **目标：保持聊天流极其干净，用户不会被命令输出淹没**
+
+### 原则四：高危操作解耦
+
+**Diff 展示和 Approval 审批，绝不塞在聊天气泡里。**
+
+- Approval 请求触发时，弹出独立的 Approval Panel（底部抽屉或全屏 Modal）
+- Diff 展示使用独立的 Diff Viewer 面板
+- 聊天气泡中仅显示一个简洁的"等待审批中..."占位提示
+
+---
+
+## 6. 当前已实现状态
 
 ### Workbench 已接线的能力
 
@@ -95,7 +174,7 @@ codex_core (LLM 调用 / 本地执行 / MCP)
 | provider 注入（config/batchWrite，apiKey + baseURL） | ✅ 联调可用 | `workbench_controller.dart` |
 | 结构化前端日志（标签化，输出到 flutter run 终端） | ✅ | `workbench_controller.dart` |
 
-### Setup 页面可配置的字段
+### Setup 页面可配置字段
 
 - **Display Name**：用户显示名
 - **Endpoint URL**：默认 `ws://127.0.0.1:60000`
@@ -105,36 +184,27 @@ codex_core (LLM 调用 / 本地执行 / MCP)
 - **API Key**（可选，仅 API Key 模式）
 - **LLM Provider Base URL**（可选，仅 API Key 模式）
 
-### ⚠️ 已知接线缺口与边界
+### 已知接线缺口
 
 - **Workbench 不能自动拉起 app-server**，必须手动先启动后端
-- **仅支持 Chat Completions 的 provider 不可用**：codex-rs `WireApi` 枚举只有 `responses`，SiliconFlow 等国内 provider 因此无法接入（见第 0 节）
+- **仅支持 Chat Completions 的 provider 不可用**：codex-rs `WireApi` 枚举只有 `responses`，SiliconFlow 等国内 provider 因此无法接入
 - **provider 切换后的 cleanup 不完整**：重连后旧 `model_providers` 条目仍留在 config.toml，需手动清理
-- **per-turn model override**：turn/start 传 `model` 参数，但 runtime 是否真正使用取决于 codex_core 内部逻辑，未完全验证
+- **Blocks 机制尚未完全落地**：当前 agentMessage 仍以纯文本拼接，待 Milestone 2 完成
 
 ---
 
-## 5. 已知限制与后续方向
+## 7. 后续优先级
 
-### 当前未完成的高优先级项
-
-- [ ] **Workbench 不能自动启动 app-server**：每次开发都需要手动先启 backend
-- [ ] **provider 扩展（支持 Chat Completions）**：需修改 codex-rs，给 `WireApi` 加 `chat_completions` 变体；不要在此之前伪造兼容
-- [ ] **provider 切换后的 cleanup**：旧 `model_providers.*` 条目不会自动从 config.toml 删除
-- [ ] **审批 UI 完整链路**：当前 Approval Panel 可用，但 diff 展示、fileChange 细节还不完整
-- [ ] **真实任务闭环验证**：目前只验证了简单对话，复杂 agent 任务（文件修改、命令执行）需专项测试
-
-### 后续方向优先级
-
-1. **稳定性与真实任务闭环**（最高优先）：跑通含命令执行、文件变更的完整 agent 任务
-2. **审批与 diff 完整链路**：让用户能清晰看到并接受/拒绝每步变更
-3. **自动拉起 app-server**：消除手动启动步骤
-4. **provider 扩展**：支持 Chat Completions 路径，解锁 SiliconFlow 等国内 provider
-5. **MCP / Skills**：中期目标，不是当前第一优先
+1. **Blocks 机制落地**（最高优先）：ChatMessage 拆分为 TextBlock + ToolCallBlock，工具调用折叠展示
+2. **真实任务闭环验证**：跑通含命令执行、文件变更的完整 agent 任务，验证工具调用可视化效果
+3. **Approval + Diff 完整链路**：弹出独立面板，让用户能清晰看到并接受/拒绝每步变更
+4. **自动拉起 app-server**：消除手动启动步骤
+5. **provider 扩展**：支持 Chat Completions 路径，解锁 SiliconFlow 等国内 provider
+6. **MCP / Skills**：中期目标，不是当前第一优先
 
 ---
 
-## 6. 本地启动 Runbook
+## 8. 本地启动 Runbook
 
 ### 环境前提
 
@@ -152,22 +222,22 @@ cd codex-rs
 cargo run -p codex-app-server --bin codex-app-server -- --listen ws://127.0.0.1:60000
 ```
 
-等待日志出现类似：
+等待日志出现：
 ```
 listening on ws://127.0.0.1:60000
 ```
 
-调试模式（更详细日志）：
+调试模式：
 ```bash
 RUST_LOG=debug cargo run -p codex-app-server --bin codex-app-server -- --listen ws://127.0.0.1:60000
 ```
 
-健康检查（另开终端）：
+健康检查：
 ```bash
 curl http://127.0.0.1:60000/readyz   # 应返回 200 OK
 ```
 
-### 步骤 2：启动 Frontend（后启动）
+### 步骤 2：启动 Frontend
 
 ```bash
 cd apps/workbench
@@ -175,39 +245,12 @@ flutter run
 ```
 
 首次运行进入 Setup 页面，填写：
-- Display Name（随意）
-- Endpoint URL：`ws://127.0.0.1:60000`（与 backend 一致）
+- Endpoint URL：`ws://127.0.0.1:60000`
 - Auth Method：选 ChatGPT（无需 API Key）
 - Approval Policy：保持默认 `Unless Trusted`
 - 点击 Save
 
 ### 步骤 3（可选）：Smoke Tests
-
-**基础 smoke（无需认证，验证 WebSocket 握手和 thread/turn 流程）：**
-```bash
-python3 tools/smoke/app_server_smoke.py
-```
-
-**Auth smoke（JSON 配置方式，验证 account/login/start + thread/start）：**
-```bash
-# 首次：从模板复制配置文件，填入真实 apiKey
-cp tools/smoke/app_server_auth_config.json.example tools/smoke/app_server_auth_config.json
-# 编辑 app_server_auth_config.json，填入 apiKey
-
-python3 tools/smoke/app_server_auth_smoke.py
-```
-
-**Config smoke（验证 provider / baseURL 配置是否真正进入 runtime）：**
-```bash
-# 需要 app_server_auth_config.json 中有真实的 providerBaseUrl + apiKey
-python3 tools/smoke/app_server_config_smoke.py
-```
-
-说明：
-- JSON 配置文件是 smoke test 的唯一输入，不使用环境变量
-- `apiKey` 通过 `account/login/start` RPC 传入，不硬编码在脚本中
-
-**三个 smoke 脚本对比：**
 
 | 脚本 | 验证内容 | 需要真实配置 |
 |------|----------|-------------|
@@ -215,19 +258,21 @@ python3 tools/smoke/app_server_config_smoke.py
 | `app_server_auth_smoke.py` | account/login/start (apiKey auth) | 需要真实 apiKey |
 | `app_server_config_smoke.py` | config/batchWrite 写入 provider + runtime 是否生效 | 需要真实 providerBaseUrl + apiKey |
 
-**Config smoke 工作原理：**
-1. `config/read` — 读取当前有效配置（快照）
-2. `config/batchWrite` — 写入 `model_providers.smoke_siliconflow`（base_url + experimental_bearer_token）+ 设置 `model_provider`，带 `reloadUserConfig: true`
-3. `config/read` — 读回验证写入持久化
-4. `thread/start` — 检查 `thread.modelProvider` 字段，确认 runtime 已切换到新 provider
-5. 恢复 `model_provider` 到原始值（null = 移除 key，恢复默认 openai provider）
+```bash
+python3 tools/smoke/app_server_smoke.py
 
-**已验证结论（2026-04-05）：**
-- `config/batchWrite` + `reloadUserConfig: true` **无需重启 app-server 即可生效**
+# Auth/Config smoke 首次配置：
+cp tools/smoke/app_server_auth_config.json.example tools/smoke/app_server_auth_config.json
+# 编辑 app_server_auth_config.json，填入 apiKey / providerBaseUrl
+python3 tools/smoke/app_server_auth_smoke.py
+python3 tools/smoke/app_server_config_smoke.py
+```
+
+**已验证结论（2026-04-05）**：
+- `config/batchWrite` + `reloadUserConfig: true` 无需重启 app-server 即可生效
 - 新 `thread/start` 会立即使用写入的 provider
-- 真实 config key 名：`model_providers.<id>`（点分隔路径）和 `model_provider`
+- config key 名：`model_providers.<id>`（点分隔路径）和 `model_provider`
 - `experimental_bearer_token` 字段用作 `Authorization: Bearer <token>` 头
-- Config smoke **只有在 app_server_auth_config.json 中有真实 providerBaseUrl 时才有意义**
 
 ### 连接失败排查
 
@@ -240,7 +285,7 @@ python3 tools/smoke/app_server_config_smoke.py
 
 ---
 
-## 7. 关键文件速查
+## 9. 关键文件速查
 
 | 路径 | 用途 |
 |------|------|
@@ -251,11 +296,12 @@ python3 tools/smoke/app_server_config_smoke.py
 | `apps/workbench/lib/ui/connection_panel.dart` | 连接状态栏（只读，无按钮） |
 | `apps/workbench/lib/ui/approval_panel.dart` | 审批面板 |
 | `apps/workbench/lib/controllers/workbench_controller.dart` | 核心状态管理，thread/turn/approval/log 全在此 |
-| `apps/workbench/lib/models/chat_message.dart` | 聊天消息数据模型 |
+| `apps/workbench/lib/models/chat_message.dart` | 聊天消息数据模型（待扩展 Blocks） |
 | `apps/workbench/lib/models/runtime_config.dart` | 配置数据模型 |
 | `apps/workbench/lib/services/app_server_service.dart` | WebSocket 连接与 JSON-RPC 实现 |
 | `codex-rs/app-server/src/main.rs` | app-server 启动入口 |
 | `codex-rs/app-server/README.md` | app-server 完整协议文档（必读） |
+| `reference/CodexMonitor/` | 标准参考实现（React/Tauri），协议疑问必查 |
 | `tools/smoke/app_server_smoke.py` | 基础 smoke（无需认证） |
 | `tools/smoke/app_server_auth_smoke.py` | Auth smoke |
 | `tools/smoke/app_server_config_smoke.py` | Config/provider smoke（含 turn/start 验证） |
@@ -263,7 +309,7 @@ python3 tools/smoke/app_server_config_smoke.py
 
 ---
 
-## 8. 开发原则
+## 10. 开发原则
 
 > 这些规则是给后续每一个 Claude 会话的。请严格遵守。
 
@@ -272,29 +318,20 @@ python3 tools/smoke/app_server_config_smoke.py
 1. **先读 CLAUDE.md，再动手**——不要跳过，不要只看前几节
 2. **改动前说明改哪些文件**——告知用户影响范围
 3. **小步修改**——不做无关重构，不顺手"清理"周围代码
+4. **遇到 API 疑问，先查 `reference/CodexMonitor`**——禁止靠猜测或幻觉填参数
 
 ### 边界控制
 
-4. **优先推进 `apps/workbench` 主线**，不要把 `little-crab-ui` 当主产品推进
-5. **除非明确必要，不要修改 `codex-rs` 深层核心**——除非是 provider/config 支持缺口
-6. **不要伪造 provider 登录/认证**——认证逻辑要真实可用，不要做假接线
-7. **`apiKey` / `providerBaseUrl` 在确认协议支持前不要接入 runtime**——当前仅本地保存是已知限制，不是 bug
+5. **优先推进 `apps/workbench` 主线**，不要把 `little-crab-ui` 当主产品推进
+6. **除非明确必要，不要修改 `codex-rs` 深层核心**——除非是 provider/config 支持缺口
+7. **不要伪造 provider 登录/认证**——认证逻辑要真实可用，不要做假接线
+8. **遵守 Blocks 机制**——不要把工具调用输出和对话文本混成一个字符串
 
 ### 改动后
 
-8. **说明影响范围和遗留 TODO**——让下一个 Claude 知道还有什么没做完
-9. **需要真实联调验证**——静态分析看起来正确不等于运行时正确
+9. **说明影响范围和遗留 TODO**——让下一个 Claude 知道还有什么没做完
+10. **需要真实联调验证**——静态分析看起来正确不等于运行时正确
 
 ---
 
-## 9. 技术方向结论
-
-- **当前主线继续押 Flutter Workbench**：这是产品外壳，不换
-- **little-crab-ui 作为调试工具保留**：有价值但不是主线
-- **后续可以考虑统一协议层/类型层**（如 `little-crab-types/`），但这不是当前第一优先级
-- **当前优先级高于"共享协议层"的**：Workbench 主链路的完善（审批 UI、diff 展示、真实联调）
-- **provider 解耦是中期目标**：先跑通 OpenAI 协议主链路，再考虑多 Provider 抽象
-
----
-
-**最后更新**：2026-04-05（Milestone 1 收尾：chat 主视图、自动连接、结构化日志、smoke 验证、千问联调通过）
+**最后更新**：2026-04-07（v0.2：战略调整——引入 CodexMonitor 参考库，确立 Blocks 机制和工具调用可视化原则，明确"私人数字公司"终极愿景）
