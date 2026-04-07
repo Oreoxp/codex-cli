@@ -44,9 +44,12 @@ class ThreadState {
   /// Raw diff from last turn/diff/updated notification.
   String? lastTurnDiff;
 
-  /// Agent message buffer (streaming delta assembly).
+  /// Agent message buffer (streaming delta assembly — kept for legacy compat).
   final StringBuffer agentMessageBuffer = StringBuffer();
   String? agentMessageItemId;
+
+  /// Live assistant message being built during a turn (block-based).
+  ChatMessage? streamingMessage;
 
   /// Final agent message from last completed turn.
   String? lastAgentMessage;
@@ -64,7 +67,7 @@ class ThreadState {
 
   ThreadState({required this.threadId});
 
-  String get streamingText => agentMessageBuffer.toString();
+  String get streamingText => streamingMessage?.text ?? agentMessageBuffer.toString();
 
   void clear() {
     chatMessages.clear();
@@ -72,6 +75,7 @@ class ThreadState {
     lastTurnDiff = null;
     agentMessageBuffer.clear();
     agentMessageItemId = null;
+    streamingMessage = null;
     lastAgentMessage = null;
     currentTurnStatus = null;
     currentTurnId = null;

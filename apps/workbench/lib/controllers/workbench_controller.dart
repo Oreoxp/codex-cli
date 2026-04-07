@@ -443,11 +443,50 @@ class WorkbenchController extends ChangeNotifier {
               itemState.buffer.write(text);
               turnItemStates.add(itemState);
 
-              state.chatMessages.add(ChatMessage(
+              // Build a block-based ChatMessage from all items collected so far.
+              final blocks = <MessageBlock>[];
+              for (final is_ in turnItemStates) {
+                if (is_.type == 'reasoning') {
+                  final rb = ReasoningBlock(
+                    summary: is_.content,
+                    rawReasoning: is_.rawReasoning,
+                    duration: is_.duration,
+                    isComplete: true,
+                  );
+                  blocks.add(rb);
+                } else if (is_.type == 'commandExecution') {
+                  final cmdName = is_.command?.join(' ') ?? 'command';
+                  final isError = is_.status == 'failed' || is_.status == 'declined';
+                  blocks.add(ToolCallBlock(
+                    callId: is_.id,
+                    toolName: cmdName,
+                    arguments: is_.content,
+                    status: isError ? ToolStatus.error : ToolStatus.success,
+                  ));
+                } else if (is_.type == 'fileChange') {
+                  final paths = is_.fileChanges
+                      ?.map((c) => c['path'] as String? ?? '')
+                      .where((p) => p.isNotEmpty)
+                      .join(', ') ?? 'file change';
+                  blocks.add(ToolCallBlock(
+                    callId: is_.id,
+                    toolName: 'fileChange: $paths',
+                    arguments: is_.content,
+                    status: is_.status == 'failed' || is_.status == 'declined'
+                        ? ToolStatus.error
+                        : ToolStatus.success,
+                  ));
+                } else if (is_.type == 'agentMessage') {
+                  blocks.add(TextBlock(text: is_.content));
+                }
+              }
+
+              final msg = ChatMessage(
                 timestamp: DateTime.now(),
                 role: ChatRole.assistant,
-                text: text,
-              ));
+                blocks: blocks,
+              );
+              state.chatMessages.add(msg);
               // Associate the full timeline with this assistant message.
               if (turnItemStates.isNotEmpty) {
                 state.messageItems[state.chatMessages.length - 1] =
@@ -602,6 +641,7 @@ class WorkbenchController extends ChangeNotifier {
     state.lastTurnDiff = null;
     state.agentMessageBuffer.clear();
     state.agentMessageItemId = null;
+    state.streamingMessage = null;
     state.items.clear();
 
     // Add user message to chat view immediately.
@@ -782,14 +822,31 @@ class WorkbenchController extends ChangeNotifier {
         if (state != null) {
           final prevStatus = state.currentTurnStatus;
           state.currentTurnStatus = turn?['status'] as String? ?? 'completed';
-          if (state.agentMessageBuffer.isNotEmpty) {
+
+          // Finalize the streaming message (block-based path).
+          if (state.streamingMessage != null) {
+            state.lastAgentMessage = state.streamingMessage!.text;
+            // Snapshot all items for this assistant message (full timeline).
+            final msgIdx = state.chatMessages.indexOf(state.streamingMessage!);
+            if (msgIdx >= 0) {
+              final snapshot = state.items.where(
+                (i) => i.type == 'reasoning' || i.type == 'commandExecution' || i.type == 'agentMessage' || i.type == 'fileChange',
+              ).toList();
+              if (snapshot.isNotEmpty) {
+                state.messageItems[msgIdx] = snapshot;
+              }
+            }
+            state.streamingMessage = null;
+            state.agentMessageBuffer.clear();
+            state.agentMessageItemId = null;
+          } else if (state.agentMessageBuffer.isNotEmpty) {
+            // Legacy fallback: flush agentMessageBuffer if no streamingMessage.
             state.lastAgentMessage = state.agentMessageBuffer.toString();
             state.chatMessages.add(ChatMessage(
               timestamp: DateTime.now(),
               role: ChatRole.assistant,
               text: state.lastAgentMessage!,
             ));
-            // Snapshot all items for this assistant message (full timeline).
             final msgIdx = state.chatMessages.length - 1;
             final snapshot = state.items.where(
               (i) => i.type == 'reasoning' || i.type == 'commandExecution' || i.type == 'agentMessage' || i.type == 'fileChange',
@@ -833,11 +890,44 @@ class WorkbenchController extends ChangeNotifier {
             } else if (rawCmd is String) {
               itemState.command = [rawCmd];
             }
+            // Block-based: add a ToolCallBlock to the streaming message.
+            if (state.streamingMessage == null) {
+              state.streamingMessage = ChatMessage(
+                timestamp: DateTime.now(),
+                role: ChatRole.assistant,
+              );
+              state.chatMessages.add(state.streamingMessage!);
+            }
+            final toolName = itemState.command?.join(' ') ?? 'command';
+            state.streamingMessage!.startToolCall(itemId, toolName);
           } else if (itemType == 'fileChange') {
             final changes = item?['changes'] as List?;
             if (changes != null) {
               itemState.fileChanges = changes.cast<Map<String, dynamic>>();
             }
+            // Block-based: add a ToolCallBlock for file changes.
+            if (state.streamingMessage == null) {
+              state.streamingMessage = ChatMessage(
+                timestamp: DateTime.now(),
+                role: ChatRole.assistant,
+              );
+              state.chatMessages.add(state.streamingMessage!);
+            }
+            final paths = itemState.fileChanges
+                ?.map((c) => c['path'] as String? ?? '')
+                .where((p) => p.isNotEmpty)
+                .join(', ') ?? 'file change';
+            state.streamingMessage!.startToolCall(itemId, 'fileChange: $paths');
+          } else if (itemType == 'reasoning') {
+            // Block-based: start a ReasoningBlock.
+            if (state.streamingMessage == null) {
+              state.streamingMessage = ChatMessage(
+                timestamp: DateTime.now(),
+                role: ChatRole.assistant,
+              );
+              state.chatMessages.add(state.streamingMessage!);
+            }
+            state.streamingMessage!.startReasoning();
           }
           state.items.add(itemState);
         }
@@ -861,6 +951,23 @@ class WorkbenchController extends ChangeNotifier {
                   is_.fileChanges = changes.cast<Map<String, dynamic>>();
                 }
               }
+              // Block-based: finalize the ToolCallBlock.
+              if (is_.type == 'commandExecution' || is_.type == 'fileChange') {
+                final isError = is_.status != 'completed';
+                final result = is_.content.isNotEmpty ? is_.content : null;
+                state.streamingMessage?.finishToolCall(completedId, result, isError: isError);
+              }
+              // Block-based: finalize the ReasoningBlock.
+              if (is_.type == 'reasoning') {
+                final rb = state.streamingMessage?.blocks
+                    .whereType<ReasoningBlock>()
+                    .where((b) => !b.isComplete)
+                    .lastOrNull;
+                if (rb != null) {
+                  rb.isComplete = true;
+                  rb.duration = is_.duration;
+                }
+              }
               break;
             }
           }
@@ -880,6 +987,17 @@ class WorkbenchController extends ChangeNotifier {
             _log('STREAM', 'agentMessage stream start  itemId=$itemId');
           }
           state.agentMessageBuffer.write(delta);
+
+          // Block-based path: ensure a streaming ChatMessage exists and append.
+          if (state.streamingMessage == null) {
+            state.streamingMessage = ChatMessage(
+              timestamp: DateTime.now(),
+              role: ChatRole.assistant,
+            );
+            state.chatMessages.add(state.streamingMessage!);
+          }
+          state.streamingMessage!.appendText(delta);
+
           // Also accumulate into the ItemState for timeline rendering.
           if (itemId != null) {
             for (final is_ in state.items) {
@@ -910,6 +1028,8 @@ class WorkbenchController extends ChangeNotifier {
                 break;
               }
             }
+            // Block-based: stream output into the ToolCallBlock args.
+            state.streamingMessage?.updateToolCallArgs(cmdItemId, output);
           }
         }
         if (output.trim().isNotEmpty) {
@@ -930,6 +1050,12 @@ class WorkbenchController extends ChangeNotifier {
                 break;
               }
             }
+            // Block-based: append to the current ReasoningBlock summary.
+            final rb = state.streamingMessage?.blocks
+                .whereType<ReasoningBlock>()
+                .where((b) => !b.isComplete)
+                .lastOrNull;
+            if (rb != null) rb.summary += summaryDelta;
           }
         }
         break;
@@ -946,6 +1072,12 @@ class WorkbenchController extends ChangeNotifier {
                 break;
               }
             }
+            // Block-based: append to the current ReasoningBlock raw text.
+            final rb = state.streamingMessage?.blocks
+                .whereType<ReasoningBlock>()
+                .where((b) => !b.isComplete)
+                .lastOrNull;
+            if (rb != null) rb.rawReasoning += rawDelta;
           }
         }
         break;
@@ -962,6 +1094,8 @@ class WorkbenchController extends ChangeNotifier {
                 break;
               }
             }
+            // Block-based: stream into the ToolCallBlock args.
+            state.streamingMessage?.updateToolCallArgs(fcItemId, fcDelta);
           }
         }
         break;
