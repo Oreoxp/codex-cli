@@ -92,12 +92,17 @@ pub(crate) fn resolve_provider_auth(
 fn bearer_auth_for_provider(
     provider: &ModelProviderInfo,
 ) -> codex_protocol::error::Result<Option<BearerAuthProvider>> {
-    if let Some(api_key) = provider.api_key()? {
-        return Ok(Some(BearerAuthProvider::new(api_key)));
-    }
-
+    // OpenCrab patch: prefer the token persisted in `config.toml`
+    // (`experimental_bearer_token`) over the legacy `env_key` lookup. The
+    // desktop shell writes the user's API key into `~/.opencrab/config.toml`,
+    // and we don't want a missing `OPENAI_API_KEY` env var to short-circuit
+    // auth resolution before that fallback is consulted.
     if let Some(token) = provider.experimental_bearer_token.clone() {
         return Ok(Some(BearerAuthProvider::new(token)));
+    }
+
+    if let Some(api_key) = provider.api_key()? {
+        return Ok(Some(BearerAuthProvider::new(api_key)));
     }
 
     Ok(None)

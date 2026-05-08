@@ -36,6 +36,14 @@ const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 pub const OPENAI_PROVIDER_ID: &str = "openai";
 const AMAZON_BEDROCK_PROVIDER_NAME: &str = "Amazon Bedrock";
 pub const AMAZON_BEDROCK_PROVIDER_ID: &str = "amazon-bedrock";
+// OpenCrab — built-in provider used by the OpenCrab desktop shell. It is a
+// generic "OpenAI-compatible Responses API" provider whose `base_url` /
+// `experimental_bearer_token` fields are populated by the OpenCrab Settings
+// → Codex UI (writing into `[model_providers.opencrab]` of config.toml).
+// `requires_openai_auth` is intentionally `false`: the OpenCrab flow uses
+// a direct bearer token instead of the ChatGPT login flow.
+const OPENCRAB_PROVIDER_NAME: &str = "OpenCrab";
+pub const OPENCRAB_PROVIDER_ID: &str = "opencrab";
 pub const AMAZON_BEDROCK_DEFAULT_BASE_URL: &str =
     "https://bedrock-mantle.us-east-1.api.aws/openai/v1";
 const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
@@ -343,8 +351,42 @@ impl ModelProviderInfo {
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
-            requires_openai_auth: true,
+            // OpenCrab patch: ChatGPT login enforcement is removed across the
+            // board so the OpenAI provider behaves like any other bearer-token
+            // provider (the desktop shell pushes the API key via
+            // `experimental_bearer_token` / `OPENAI_API_KEY`). Flip back to
+            // `true` if upstream-style login flow is needed.
+            requires_openai_auth: false,
             supports_websockets: true,
+        }
+    }
+
+    /// Built-in OpenCrab provider. The base URL and bearer token come from
+    /// `[model_providers.opencrab]` in `config.toml` (managed by the OpenCrab
+    /// desktop shell); the built-in entry just guarantees the id resolves
+    /// even before the user opens Settings → Codex.
+    pub fn create_opencrab_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: OPENCRAB_PROVIDER_NAME.into(),
+            base_url: None,
+            // OpenCrab writes the API key into `experimental_bearer_token`,
+            // but we still expose `OPENAI_API_KEY` as a convenient fallback
+            // env var for headless / CI flows.
+            env_key: Some("OPENAI_API_KEY".into()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
         }
     }
 
@@ -405,13 +447,17 @@ pub fn built_in_model_providers(
     use ModelProviderInfo as P;
     let openai_provider = P::create_openai_provider(openai_base_url);
     let amazon_bedrock_provider = P::create_amazon_bedrock_provider(/*aws*/ None);
+    let opencrab_provider = P::create_opencrab_provider();
 
     // We do not want to be in the business of adjucating which third-party
     // providers are bundled with Codex CLI, so we only include the OpenAI and
-    // open source ("oss") providers by default. Users are encouraged to add to
+    // open source ("oss") providers by default. The OpenCrab provider is also
+    // bundled because the desktop shell relies on it being resolvable before
+    // the user has touched Settings → Codex. Users are encouraged to add to
     // `model_providers` in config.toml to add their own providers.
     [
         (OPENAI_PROVIDER_ID, openai_provider),
+        (OPENCRAB_PROVIDER_ID, opencrab_provider),
         (AMAZON_BEDROCK_PROVIDER_ID, amazon_bedrock_provider),
         (
             OLLAMA_OSS_PROVIDER_ID,
@@ -458,7 +504,12 @@ pub fn merge_configured_model_providers(
                 }
             }
         } else {
-            model_providers.entry(key).or_insert(provider);
+            // OpenCrab patch: full overwrite (instead of `or_insert`) so a
+            // user-provided `[model_providers.opencrab]` block in config.toml
+            // can supply `base_url` / `experimental_bearer_token` that replace
+            // the built-in placeholder. For non-reserved IDs the built-in
+            // entry doesn't exist, so this is a no-op compared to before.
+            model_providers.insert(key, provider);
         }
     }
 
