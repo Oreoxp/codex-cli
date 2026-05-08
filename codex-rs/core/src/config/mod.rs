@@ -3008,7 +3008,12 @@ impl Config {
 
         let model_provider_id = model_provider
             .or(cfg.model_provider)
-            .unwrap_or_else(|| "openai".to_string());
+            // OpenCrab patch: default to the built-in `opencrab` provider so
+            // a fresh install with no config.toml edits goes through the
+            // bearer-token flow managed by the OpenCrab desktop shell rather
+            // than landing on the OpenAI provider that historically required
+            // ChatGPT login.
+            .unwrap_or_else(|| codex_model_provider_info::OPENCRAB_PROVIDER_ID.to_string());
         let model_provider = model_providers
             .get(&model_provider_id)
             .ok_or_else(|| {
