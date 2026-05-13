@@ -9,6 +9,8 @@ use crate::requests::attach_item_ids;
 use crate::requests::headers::build_session_headers;
 use crate::requests::headers::insert_header;
 use crate::requests::headers::subagent_header;
+use crate::requests::provider_needs_dashscope_tool_output_rewrite;
+use crate::requests::rewrite_tool_outputs_as_user_messages_for_dashscope;
 use crate::sse::spawn_response_stream;
 use crate::telemetry::SseTelemetry;
 use codex_client::HttpTransport;
@@ -85,6 +87,9 @@ impl<T: HttpTransport> ResponsesClient<T> {
             .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
         if request.store && self.session.provider().is_azure_responses_endpoint() {
             attach_item_ids(&mut body, &request.input);
+        }
+        if provider_needs_dashscope_tool_output_rewrite(&self.session.provider().base_url) {
+            rewrite_tool_outputs_as_user_messages_for_dashscope(&mut body);
         }
 
         let mut headers = extra_headers;
