@@ -26,6 +26,10 @@ pub(super) async fn create_thread(
         cwd,
         model_provider_id: params.metadata.model_provider.clone(),
         generate_memories: matches!(params.metadata.memory_mode, ThreadMemoryMode::Enabled),
+        // OpenCrab Step 8: thread-store local path uses the upstream
+        // YYYY/MM/DD layout. The flag override is intentionally an
+        // app-server-only contract (see `run_main_with_transport_options`).
+        team_session_dir: None,
     };
     let state_db_ctx = store.state_db().await;
     let recorder = RolloutRecorder::new(

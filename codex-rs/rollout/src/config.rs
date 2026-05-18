@@ -8,6 +8,18 @@ pub trait RolloutConfigView {
     fn cwd(&self) -> &Path;
     fn model_provider_id(&self) -> &str;
     fn generate_memories(&self) -> bool;
+
+    /// OpenCrab Phase 4 Step 8 — optional override for the rollout
+    /// directory. When `Some`, the rollout file is written directly
+    /// under this path (no `YYYY/MM/DD` subdivision); when `None`, the
+    /// classic `codex_home/sessions/YYYY/MM/DD/` behavior is used.
+    ///
+    /// Default impl returns `None` so every existing
+    /// `RolloutConfigView` implementor (including external code) keeps
+    /// its upstream behavior without source changes.
+    fn team_session_dir(&self) -> Option<&Path> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,6 +29,8 @@ pub struct RolloutConfig {
     pub cwd: PathBuf,
     pub model_provider_id: String,
     pub generate_memories: bool,
+    /// OpenCrab Step 8 — see `RolloutConfigView::team_session_dir`.
+    pub team_session_dir: Option<PathBuf>,
 }
 
 pub type Config = RolloutConfig;
@@ -29,6 +43,7 @@ impl RolloutConfig {
             cwd: view.cwd().to_path_buf(),
             model_provider_id: view.model_provider_id().to_string(),
             generate_memories: view.generate_memories(),
+            team_session_dir: view.team_session_dir().map(Path::to_path_buf),
         }
     }
 }
@@ -53,6 +68,10 @@ impl RolloutConfigView for RolloutConfig {
     fn generate_memories(&self) -> bool {
         self.generate_memories
     }
+
+    fn team_session_dir(&self) -> Option<&Path> {
+        self.team_session_dir.as_deref()
+    }
 }
 
 impl<T: RolloutConfigView + ?Sized> RolloutConfigView for &T {
@@ -75,6 +94,10 @@ impl<T: RolloutConfigView + ?Sized> RolloutConfigView for &T {
     fn generate_memories(&self) -> bool {
         (*self).generate_memories()
     }
+
+    fn team_session_dir(&self) -> Option<&Path> {
+        (*self).team_session_dir()
+    }
 }
 
 impl<T: RolloutConfigView + ?Sized> RolloutConfigView for Arc<T> {
@@ -96,5 +119,9 @@ impl<T: RolloutConfigView + ?Sized> RolloutConfigView for Arc<T> {
 
     fn generate_memories(&self) -> bool {
         self.as_ref().generate_memories()
+    }
+
+    fn team_session_dir(&self) -> Option<&Path> {
+        self.as_ref().team_session_dir()
     }
 }
