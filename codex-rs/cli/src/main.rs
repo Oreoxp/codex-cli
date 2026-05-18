@@ -513,6 +513,19 @@ struct AppServerCommand {
     #[arg(long = "analytics-default-enabled")]
     analytics_default_enabled: bool,
 
+    /// OpenCrab Phase 4 Step 8 — override the directory rollouts are
+    /// written to. When set, the `RolloutRecorder` writes the rollout
+    /// JSONL directly under this path (no `sessions/YYYY/MM/DD/`
+    /// subdivision). When omitted, behavior is byte-identical to the
+    /// original upstream: `<CODEX_HOME>/sessions/YYYY/MM/DD/`.
+    ///
+    /// Intended consumer: the OpenCrab Tauri host, which spawns
+    /// `codex app-server` once per workspace and computes a stable
+    /// per-workspace path
+    /// (`~/.opencrab/team_sessions/<project_hash>/`).
+    #[arg(long = "team-session-dir", value_name = "DIR")]
+    team_session_dir: Option<std::path::PathBuf>,
+
     #[command(flatten)]
     auth: codex_app_server::AppServerWebsocketAuthArgs,
 }
@@ -1040,6 +1053,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 stdio,
                 remote_control,
                 analytics_default_enabled,
+                team_session_dir,
                 auth,
             } = app_server_cli;
             let strict_config = app_server_strict_config || root_strict_config;
@@ -1057,8 +1071,13 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                         listen
                     };
                     let auth = auth.try_into_settings()?;
+                    // OpenCrab Step 8 — pass the rollout-dir override through
+                    // `AppServerRuntimeOptions` so the app-server can mutate
+                    // `config.team_session_dir` after the on-disk config has
+                    // been loaded.
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
                         remote_control_enabled: remote_control,
+                        team_session_dir,
                         ..Default::default()
                     };
                     codex_app_server::run_main_with_transport_options(

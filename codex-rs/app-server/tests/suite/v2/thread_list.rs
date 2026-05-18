@@ -616,6 +616,8 @@ sqlite = true
         cwd: codex_home.path().to_path_buf(),
         model_provider_id: "mock_provider".to_string(),
         generate_memories: false,
+        // OpenCrab Step 8: test uses upstream sessions/ layout.
+        team_session_dir: None,
     };
     let repaired_page = codex_core::RolloutRecorder::list_threads(
         Some(state_db.clone()),

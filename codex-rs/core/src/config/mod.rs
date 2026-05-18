@@ -847,6 +847,14 @@ pub struct Config {
     /// Directory where Codex stores the SQLite state DB.
     pub sqlite_home: PathBuf,
 
+    /// OpenCrab Phase 4 Step 8 — optional override for the per-rollout
+    /// directory. When `Some`, the `RolloutRecorder` writes the rollout
+    /// file directly under this path (no `sessions/YYYY/MM/DD/`
+    /// subdivision). Populated by the `--team-session-dir` CLI flag on
+    /// `codex app-server`. Never read from `config.toml`. `None` (the
+    /// upstream default) preserves byte-identical legacy behavior.
+    pub team_session_dir: Option<PathBuf>,
+
     /// Directory where Codex writes log files (defaults to `$CODEX_HOME/log`).
     pub log_dir: PathBuf,
 
@@ -3469,6 +3477,9 @@ impl Config {
             agent_interrupt_message_enabled,
             codex_home,
             sqlite_home,
+            // OpenCrab Step 8: never sourced from config.toml; CLI flag
+            // sets it post-load via `Config.team_session_dir = Some(...)`.
+            team_session_dir: None,
             log_dir,
             config_lock_export_dir: cfg
                 .debug

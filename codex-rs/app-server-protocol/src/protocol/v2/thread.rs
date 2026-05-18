@@ -170,6 +170,21 @@ pub struct ThreadStartParams {
     #[experimental("thread/start.persistFullHistory")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub persist_extended_history: bool,
+
+    /// OpenCrab Phase 4 Step 8-fix (2026-05-18) — per-thread rollout
+    /// directory override. When `Some`, this thread's rollout JSONL is
+    /// written directly under the supplied path (no
+    /// `sessions/YYYY/MM/DD/` subdivision). Takes precedence over the
+    /// app-server-level `--team-session-dir` CLI flag set at process
+    /// spawn. Use case: OpenCrab Tauri host computes
+    /// `~/.opencrab/agents/<agent_id>/team_sessions/<team_id>/<project_hash>/`
+    /// per `thread/start` request so each team agent's rollouts land
+    /// in its own directory.
+    ///
+    /// String (not `PathBuf`) for JSON-serde / TS-binding friendliness;
+    /// matches the `cwd` field's encoding.
+    #[ts(optional = nullable)]
+    pub session_dir: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]

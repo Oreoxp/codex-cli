@@ -399,11 +399,17 @@ pub enum PluginStartupTasks {
     Skip,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppServerRuntimeOptions {
     pub plugin_startup_tasks: PluginStartupTasks,
     pub remote_control_enabled: bool,
     pub install_shutdown_signal_handler: bool,
+    /// OpenCrab Phase 4 Step 8 — overrides `Config::team_session_dir`
+    /// after the on-disk + CLI-overrides config has been loaded.
+    /// Populated by the `--team-session-dir` CLI flag on
+    /// `codex app-server` (CLI binary path; see `cli/src/main.rs`).
+    /// `None` preserves byte-identical upstream behavior.
+    pub team_session_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for AppServerRuntimeOptions {
@@ -412,6 +418,7 @@ impl Default for AppServerRuntimeOptions {
             plugin_startup_tasks: PluginStartupTasks::Start,
             remote_control_enabled: false,
             install_shutdown_signal_handler: true,
+            team_session_dir: None,
         }
     }
 }
@@ -576,6 +583,16 @@ pub async fn run_main_with_transport_options(
                 warn!(error = %err, "Failed to deserialize config for personality migration");
             }
         }
+    }
+
+    // OpenCrab Phase 4 Step 8 — apply the `--team-session-dir` flag's value
+    // (if any) AFTER config has reached its final value. The personality
+    // migration above may reload config from disk, and `team_session_dir` is
+    // intentionally NOT a `config.toml` field, so the override is applied here
+    // (after the last possible reload) rather than at the fork patch's original
+    // pre-`state_db` spot, where the migration reload would silently drop it.
+    if let Some(team_session_dir) = runtime_options.team_session_dir.as_ref() {
+        config.team_session_dir = Some(team_session_dir.clone());
     }
 
     if let Ok(Some(err)) = check_execpolicy_for_warnings(&config.config_layer_stack).await {

@@ -64,6 +64,10 @@ pub(super) async fn resume_thread(
         cwd,
         model_provider_id: params.metadata.model_provider.clone(),
         generate_memories: matches!(params.metadata.memory_mode, ThreadMemoryMode::Enabled),
+        // OpenCrab Step 8: local live writer uses upstream sessions/
+        // layout. The flag override only affects new-thread writes via
+        // app-server.
+        team_session_dir: None,
     };
     let recorder = RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path))
         .await

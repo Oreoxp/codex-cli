@@ -44,6 +44,10 @@ impl codex_rollout::RolloutConfigView for Config {
     fn generate_memories(&self) -> bool {
         self.memories.generate_memories
     }
+
+    fn team_session_dir(&self) -> Option<&std::path::Path> {
+        self.team_session_dir.as_deref()
+    }
 }
 
 pub(crate) mod list {

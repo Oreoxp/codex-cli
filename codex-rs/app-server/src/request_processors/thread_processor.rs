@@ -850,6 +850,7 @@ impl ThreadRequestProcessor {
             thread_source,
             environments,
             persist_extended_history,
+            session_dir,
         } = params;
         if sandbox.is_some() && permissions.is_some() {
             return Err(invalid_request(
@@ -907,6 +908,7 @@ impl ThreadRequestProcessor {
                 service_name,
                 experimental_raw_events,
                 request_trace,
+                session_dir,
             )
             .await
             {
@@ -991,6 +993,7 @@ impl ThreadRequestProcessor {
         service_name: Option<String>,
         experimental_raw_events: bool,
         request_trace: Option<W3cTraceContext>,
+        session_dir: Option<String>,
     ) -> Result<(), JSONRPCErrorError> {
         let thread_start_started_at = std::time::Instant::now();
         let requested_cwd = typesafe_overrides.cwd.clone();
@@ -998,6 +1001,18 @@ impl ThreadRequestProcessor {
             .load_with_overrides(config_overrides.clone(), typesafe_overrides.clone())
             .await
             .map_err(|err| config_load_error(&err))?;
+
+        // OpenCrab Phase 4 Step 8-fix — per-thread session_dir takes
+        // precedence over the app-server-level `--team-session-dir` CLI
+        // flag (option-B Step 8 default). Fallback chain:
+        //   1. `params.session_dir` → this thread's rollouts land there.
+        //   2. `Config.team_session_dir` (CLI flag, set at process spawn).
+        //   3. Upstream default: `codex_home/sessions/YYYY/MM/DD/`.
+        // The mutation is gated on `Some(_)` so a `None` payload does
+        // NOT clear a CLI-flag-set value.
+        if let Some(dir) = session_dir.as_deref() {
+            config.team_session_dir = Some(std::path::PathBuf::from(dir));
+        }
 
         // The user may have requested WorkspaceWrite or DangerFullAccess via
         // the command line, though in the process of deriving the Config, it
