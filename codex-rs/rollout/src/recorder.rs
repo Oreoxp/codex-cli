@@ -1375,14 +1375,31 @@ fn precompute_log_file_info(
     config: &impl RolloutConfigView,
     conversation_id: ThreadId,
 ) -> std::io::Result<LogFileInfo> {
-    // Resolve ~/.codex/sessions/YYYY/MM/DD path.
     let timestamp = OffsetDateTime::now_local()
         .map_err(|e| IoError::other(format!("failed to get local time: {e}")))?;
-    let mut dir = config.codex_home().to_path_buf();
-    dir.push(SESSIONS_SUBDIR);
-    dir.push(timestamp.year().to_string());
-    dir.push(format!("{:02}", u8::from(timestamp.month())));
-    dir.push(format!("{:02}", timestamp.day()));
+
+    // OpenCrab Phase 4 Step 8 — when `team_session_dir` is set, rollouts
+    // go directly under that path (no `sessions/YYYY/MM/DD/`
+    // subdivision). The OpenCrab host computes a per-workspace path
+    // (e.g. `~/.opencrab/team_sessions/<project_hash>/`) at app-server
+    // spawn time and passes it via `--team-session-dir`. The
+    // YYYY/MM/DD layout is dropped because the OpenCrab side organizes
+    // by workspace identity (project_hash) instead of by date.
+    //
+    // When `team_session_dir` is None (no flag / no override), behavior
+    // is byte-identical to the original upstream:
+    // `<codex_home>/sessions/YYYY/MM/DD/`.
+    let dir = match config.team_session_dir() {
+        Some(override_dir) => override_dir.to_path_buf(),
+        None => {
+            let mut dir = config.codex_home().to_path_buf();
+            dir.push(SESSIONS_SUBDIR);
+            dir.push(timestamp.year().to_string());
+            dir.push(format!("{:02}", u8::from(timestamp.month())));
+            dir.push(format!("{:02}", timestamp.day()));
+            dir
+        }
+    };
 
     // Custom format for YYYY-MM-DDThh-mm-ss. Use `-` instead of `:` for
     // compatibility with filesystems that do not allow colons in filenames.

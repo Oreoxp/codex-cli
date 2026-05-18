@@ -34,7 +34,118 @@ fn test_config(codex_home: &Path) -> RolloutConfig {
         cwd: codex_home.to_path_buf(),
         model_provider_id: "test-provider".to_string(),
         generate_memories: true,
+        // OpenCrab Step 8: default upstream behavior (no override).
+        team_session_dir: None,
     }
+}
+
+// OpenCrab Phase 4 Step 8 — pin the rollout-path-override behavior.
+// When `team_session_dir` is `Some`, `precompute_log_file_info` writes
+// the rollout directly under that path. When `None`, the upstream
+// `codex_home/sessions/YYYY/MM/DD/` layout is used.
+#[test]
+fn rollout_path_uses_team_session_dir_override_when_set() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+    let override_dir = TempDir::new()?;
+    let mut config = test_config(codex_home.path());
+    config.team_session_dir = Some(override_dir.path().to_path_buf());
+    let conversation_id = ThreadId::new();
+    let info = super::precompute_log_file_info(&config, conversation_id)?;
+    assert!(
+        info.path.starts_with(override_dir.path()),
+        "expected rollout under override dir, got {}",
+        info.path.display()
+    );
+    let parent = info.path.parent().expect("rollout path has parent");
+    assert_eq!(
+        parent,
+        override_dir.path(),
+        "no YYYY/MM/DD subdivision expected under team_session_dir"
+    );
+    let filename = info
+        .path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .expect("filename");
+    assert!(
+        filename.starts_with("rollout-") && filename.ends_with(".jsonl"),
+        "unexpected filename shape: {filename}"
+    );
+    assert!(
+        filename.contains(&conversation_id.to_string()),
+        "filename must embed conversation id"
+    );
+    Ok(())
+}
+
+#[test]
+fn rollout_path_falls_back_to_codex_home_when_override_is_none() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config = test_config(codex_home.path());
+    assert!(config.team_session_dir.is_none());
+    let conversation_id = ThreadId::new();
+    let info = super::precompute_log_file_info(&config, conversation_id)?;
+    let sessions_root = codex_home.path().join("sessions");
+    assert!(
+        info.path.starts_with(&sessions_root),
+        "expected rollout under {}, got {}",
+        sessions_root.display(),
+        info.path.display()
+    );
+    Ok(())
+}
+
+// OpenCrab Phase 4 Step 8-fix — the `thread/start` `session_dir` param
+// is applied as a post-load mutation of `Config.team_session_dir`. A
+// per-thread session_dir overrides any CLI-flag-set value; a `None`
+// param does NOT clear the CLI flag's value. Pin both branches against
+// the same `precompute_log_file_info` so the rollout-side fall-through
+// behavior stays a single source of truth.
+#[test]
+fn rollout_path_per_thread_override_wins_over_cli_flag_value() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cli_flag_dir = TempDir::new()?; // simulates --team-session-dir
+    let per_thread_dir = TempDir::new()?; // simulates params.session_dir
+    let mut config = test_config(codex_home.path());
+
+    // Step 1: CLI flag fires before any thread/start. Config.team_session_dir
+    // is set workspace-wide; rollouts go to cli_flag_dir.
+    config.team_session_dir = Some(cli_flag_dir.path().to_path_buf());
+    let info = super::precompute_log_file_info(&config, ThreadId::new())?;
+    assert!(info.path.starts_with(cli_flag_dir.path()));
+
+    // Step 2: thread/start arrives with params.session_dir = per_thread_dir.
+    // The handler's post-load mutation:
+    //   if let Some(dir) = session_dir.as_deref() {
+    //       config.team_session_dir = Some(PathBuf::from(dir));
+    //   }
+    // Pin that the mutation overrides the CLI value for this thread.
+    config.team_session_dir = Some(per_thread_dir.path().to_path_buf());
+    let info = super::precompute_log_file_info(&config, ThreadId::new())?;
+    assert!(
+        info.path.starts_with(per_thread_dir.path()),
+        "per-thread override should win over CLI-flag value; got {}",
+        info.path.display()
+    );
+    // And NOT under the CLI dir.
+    assert!(!info.path.starts_with(cli_flag_dir.path()));
+    Ok(())
+}
+
+#[test]
+fn rollout_path_thread_with_no_session_dir_preserves_cli_flag_value() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cli_flag_dir = TempDir::new()?;
+    let mut config = test_config(codex_home.path());
+    config.team_session_dir = Some(cli_flag_dir.path().to_path_buf());
+
+    // Simulates: thread/start arrives with session_dir = None. The handler's
+    // gate (`if let Some(dir) = session_dir.as_deref()`) skips the mutation,
+    // so Config.team_session_dir keeps the CLI-flag-set value. Rollout still
+    // lands under cli_flag_dir.
+    let info = super::precompute_log_file_info(&config, ThreadId::new())?;
+    assert!(info.path.starts_with(cli_flag_dir.path()));
+    Ok(())
 }
 
 fn write_session_file(root: &Path, ts: &str, uuid: Uuid) -> std::io::Result<PathBuf> {

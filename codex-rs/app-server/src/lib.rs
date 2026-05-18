@@ -373,15 +373,22 @@ pub enum PluginStartupTasks {
     Skip,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppServerRuntimeOptions {
     pub plugin_startup_tasks: PluginStartupTasks,
+    /// OpenCrab Phase 4 Step 8 — overrides `Config::team_session_dir`
+    /// after the on-disk + CLI-overrides config has been loaded.
+    /// Populated by the `--team-session-dir` CLI flag on
+    /// `codex app-server` (CLI binary path; see `cli/src/main.rs`).
+    /// `None` preserves byte-identical upstream behavior.
+    pub team_session_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for AppServerRuntimeOptions {
     fn default() -> Self {
         Self {
             plugin_startup_tasks: PluginStartupTasks::Start,
+            team_session_dir: None,
         }
     }
 }
@@ -488,6 +495,14 @@ pub async fn run_main_with_transport_options(
             )
         }
     };
+
+    // OpenCrab Phase 4 Step 8 — apply the `--team-session-dir` flag's
+    // value (if any) AFTER config load so it cannot be silently overridden
+    // by a stray `config.toml` field. The field is intentionally NOT
+    // accepted from config.toml.
+    if let Some(team_session_dir) = runtime_options.team_session_dir.as_ref() {
+        config.team_session_dir = Some(team_session_dir.clone());
+    }
 
     let state_db_result = rollout_state_db::try_init(&config).await;
     let state_db_init_error = state_db_result.as_ref().err().map(ToString::to_string);

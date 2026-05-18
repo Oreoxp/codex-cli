@@ -46,6 +46,9 @@ pub(super) async fn list_threads(
         cwd: store.config.codex_home.clone(),
         model_provider_id: store.config.default_model_provider_id.clone(),
         generate_memories: false,
+        // OpenCrab Step 8: listing uses the upstream sessions/ layout; the
+        // flag override only affects new-thread writes via app-server.
+        team_session_dir: None,
     };
     let page = list_rollout_threads(
         state_db,
