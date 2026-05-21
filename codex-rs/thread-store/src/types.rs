@@ -86,6 +86,14 @@ pub struct CreateThreadParams {
     pub metadata: ThreadPersistenceMetadata,
     /// Whether persistence should include the extended event surface.
     pub event_persistence_mode: ThreadEventPersistenceMode,
+    /// OpenCrab Phase 4 Step 8 — optional per-thread rollout directory
+    /// override. `Some` routes this thread's rollout JSONL directly under
+    /// the given path (no `YYYY/MM/DD` subdivision); `None` keeps the
+    /// upstream `codex_home/sessions/YYYY/MM/DD/` layout. Carried on
+    /// `CreateThreadParams` so per-thread (per-agent) routing survives
+    /// `create_thread`, which builds a fresh `RolloutConfig` and would
+    /// otherwise drop a value held only on the caller's `Config`.
+    pub team_session_dir: Option<PathBuf>,
 }
 
 /// Parameters required to reopen persistence for an existing thread.

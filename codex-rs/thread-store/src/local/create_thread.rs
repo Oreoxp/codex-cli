@@ -24,10 +24,13 @@ pub(super) async fn create_thread(
         cwd,
         model_provider_id: params.metadata.model_provider.clone(),
         generate_memories: matches!(params.metadata.memory_mode, ThreadMemoryMode::Enabled),
-        // OpenCrab Step 8: thread-store local path uses the upstream
-        // YYYY/MM/DD layout. The flag override is intentionally an
-        // app-server-only contract (see `run_main_with_transport_options`).
-        team_session_dir: None,
+        // OpenCrab Phase 4 Step 8 — honor the per-thread rollout dir
+        // override forwarded on `CreateThreadParams`. The app-server's
+        // `thread/start` path routes new threads through this local
+        // store, so the override has to be applied *here* (not just in
+        // the app-server `Config`); `None` keeps the upstream
+        // `codex_home/sessions/YYYY/MM/DD/` layout.
+        team_session_dir: params.team_session_dir.clone(),
     };
     let recorder = RolloutRecorder::new(
         &config,

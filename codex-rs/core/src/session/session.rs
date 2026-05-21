@@ -574,6 +574,10 @@ impl Session {
                                     },
                                 },
                                 event_persistence_mode,
+                                // OpenCrab Phase 4 Step 8 — forward the
+                                // per-thread rollout dir override so it
+                                // survives `create_thread`.
+                                team_session_dir: config.team_session_dir.clone(),
                             },
                         )
                         .await?

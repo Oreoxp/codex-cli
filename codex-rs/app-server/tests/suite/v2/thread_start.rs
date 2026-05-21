@@ -52,6 +52,77 @@ use super::analytics::wait_for_analytics_payload;
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 
+/// OpenCrab Phase 4 Step 8-fix regression — a per-thread `session_dir`
+/// override must survive the trust-elevation `config` reload inside
+/// `thread_start_task`.
+///
+/// `thread_start_task` writes `config.team_session_dir` from the
+/// `session_dir` param, but the trust-elevation branch then reloads
+/// `config` wholesale (`config_manager.load_with_cli_overrides`), which
+/// drops every post-load mutation. The fix re-applies the override after
+/// the reload. This test drives a real `thread/start` straight through the
+/// reload path — an untrusted `cwd` plus `sandbox = WorkspaceWrite` (which
+/// makes `requested_permissions_trust_project` true) — and asserts the
+/// precomputed rollout path lands directly under `session_dir`.
+///
+/// `recorder_tests.rs` only unit-tests `precompute_log_file_info` in
+/// isolation, so it never covered this assembly: zeroes in on the part,
+/// missed the wiring.
+#[tokio::test]
+async fn thread_start_session_dir_survives_trust_elevation_reload() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
+
+    // A fresh project directory: `config.active_project.trust_level` is
+    // `None` on first use, one of the preconditions of the trust-elevation
+    // branch in `thread_start_task`.
+    let project = TempDir::new()?;
+    // The per-thread rollout directory the override must route to.
+    let session_dir = TempDir::new()?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let req_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            cwd: Some(project.path().to_string_lossy().into_owned()),
+            // `WorkspaceWrite` makes `requested_permissions_trust_project`
+            // true → combined with the untrusted `cwd` above, the
+            // trust-elevation branch fires and reloads `config`.
+            sandbox: Some(SandboxMode::WorkspaceWrite),
+            session_dir: Some(session_dir.path().to_string_lossy().into_owned()),
+            ..Default::default()
+        })
+        .await?;
+
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(req_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(resp)?;
+
+    let rollout_path = thread.path.expect("thread path should be present");
+    assert!(
+        rollout_path.starts_with(session_dir.path()),
+        "rollout path must land under the per-thread session_dir even after \
+         the trust-elevation reload; got {} (session_dir {})",
+        rollout_path.display(),
+        session_dir.path().display(),
+    );
+    // The `team_session_dir` override carries no `sessions/YYYY/MM/DD/`
+    // subdivision, so the rollout file is an immediate child of session_dir.
+    assert_eq!(
+        rollout_path.parent(),
+        Some(session_dir.path()),
+        "team_session_dir override must not add date subdivision"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn thread_start_deprecates_persist_extended_history_true() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;

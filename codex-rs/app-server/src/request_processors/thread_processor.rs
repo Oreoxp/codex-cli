@@ -1010,9 +1010,21 @@ impl ThreadRequestProcessor {
         //   3. Upstream default: `codex_home/sessions/YYYY/MM/DD/`.
         // The mutation is gated on `Some(_)` so a `None` payload does
         // NOT clear a CLI-flag-set value.
-        if let Some(dir) = session_dir.as_deref() {
-            config.team_session_dir = Some(std::path::PathBuf::from(dir));
-        }
+        //
+        // Hoisted into a closure because the trust-elevation branch below
+        // reloads `config` wholesale via `config_manager.load_with_cli_overrides`,
+        // which silently discards this post-load mutation (the reloaded
+        // `Config` only carries the CLI-flag value, or `None`). That reload
+        // is upstream logic we deliberately leave untouched, so the override
+        // is re-applied right after it. Applying it here as well keeps the
+        // common path (branch not taken) correct without depending on the
+        // re-apply.
+        let apply_session_dir_override = |config: &mut Config| {
+            if let Some(dir) = session_dir.as_deref() {
+                config.team_session_dir = Some(std::path::PathBuf::from(dir));
+            }
+        };
+        apply_session_dir_override(&mut config);
 
         // The user may have requested WorkspaceWrite or DangerFullAccess via
         // the command line, though in the process of deriving the Config, it
@@ -1078,6 +1090,13 @@ impl ThreadRequestProcessor {
                 .await
                 .map_err(|err| config_load_error(&err))?;
         }
+
+        // Re-apply the per-thread session_dir override. If the
+        // trust-elevation branch above fired, it replaced `config`
+        // wholesale and dropped the mutation applied before the branch;
+        // re-applying restores it. A no-op (re-sets the same value) when
+        // the branch did not fire.
+        apply_session_dir_override(&mut config);
 
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let environments = environments.unwrap_or_else(|| {

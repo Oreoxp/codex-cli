@@ -1369,6 +1369,7 @@ async fn seed_pathless_store_thread(
                 memory_mode: ThreadMemoryMode::Disabled,
             },
             event_persistence_mode: ThreadEventPersistenceMode::default(),
+            team_session_dir: None,
         })
         .await?;
     store

@@ -1030,6 +1030,7 @@ mod tests {
             dynamic_tools: Vec::new(),
             metadata: thread_metadata(),
             event_persistence_mode: ThreadEventPersistenceMode::Limited,
+            team_session_dir: None,
         }
     }
 
