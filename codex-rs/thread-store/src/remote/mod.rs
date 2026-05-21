@@ -363,6 +363,7 @@ mod tests {
                 dynamic_tools: Vec::new(),
                 metadata: metadata.clone(),
                 event_persistence_mode: ThreadEventPersistenceMode::Limited,
+                team_session_dir: None,
             })
             .await
             .expect("create thread");

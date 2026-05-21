@@ -2830,6 +2830,7 @@ async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
                 },
             },
             event_persistence_mode: ThreadEventPersistenceMode::Limited,
+            team_session_dir: None,
         },
     )
     .await
@@ -5035,6 +5036,7 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
                 },
             },
             event_persistence_mode: ThreadEventPersistenceMode::Limited,
+            team_session_dir: None,
         },
     )
     .await
