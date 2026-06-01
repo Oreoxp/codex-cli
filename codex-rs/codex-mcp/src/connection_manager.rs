@@ -681,7 +681,29 @@ impl McpConnectionManager {
         aggregated
     }
 
+    /// Resolve a detached, cheaply-cloneable [`McpClientHandle`] for `server`,
+    /// or `None` if no such server is registered.
+    ///
+    /// Obtaining the handle only reads the in-memory client map; it does *not*
+    /// await server readiness or any I/O. Callers that hold an outer lock (the
+    /// session-level `RwLock<McpConnectionManager>`) should clone the handle
+    /// out, drop that lock, and only then run the (potentially slow) MCP
+    /// round-trip on the handle. Holding the read lock across a tool call is
+    /// what let a single slow/wedged server stall every other MCP call behind a
+    /// queued `refresh_mcp_servers` writer (a write-preferring `RwLock` blocks
+    /// new readers once a writer is waiting). See the OpenCrab P6-hang fix.
+    pub fn client_handle(&self, server: &str) -> Option<McpClientHandle> {
+        self.clients.get(server).map(|inner| McpClientHandle {
+            server: server.to_string(),
+            inner: inner.clone(),
+        })
+    }
+
     /// Invoke the tool indicated by the (server, tool) pair.
+    ///
+    /// Thin wrapper over [`McpClientHandle::call_tool`]. Callers holding an
+    /// outer lock should prefer [`Self::client_handle`] so the lock can be
+    /// released before the call runs.
     pub async fn call_tool(
         &self,
         server: &str,
@@ -689,7 +711,103 @@ impl McpConnectionManager {
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
     ) -> Result<CallToolResult> {
-        let client = self.client_by_name(server).await?;
+        self.client_handle(server)
+            .ok_or_else(|| anyhow!("unknown MCP server '{server}'"))?
+            .call_tool(tool, arguments, meta)
+            .await
+    }
+
+    pub async fn server_supports_sandbox_state_meta_capability(
+        &self,
+        server: &str,
+    ) -> Result<bool> {
+        Ok(self
+            .client_by_name(server)
+            .await?
+            .server_supports_sandbox_state_meta_capability)
+    }
+
+    /// List resources from the specified server.
+    pub async fn list_resources(
+        &self,
+        server: &str,
+        params: Option<PaginatedRequestParams>,
+    ) -> Result<ListResourcesResult> {
+        self.client_handle(server)
+            .ok_or_else(|| anyhow!("unknown MCP server '{server}'"))?
+            .list_resources(params)
+            .await
+    }
+
+    /// List resource templates from the specified server.
+    pub async fn list_resource_templates(
+        &self,
+        server: &str,
+        params: Option<PaginatedRequestParams>,
+    ) -> Result<ListResourceTemplatesResult> {
+        self.client_handle(server)
+            .ok_or_else(|| anyhow!("unknown MCP server '{server}'"))?
+            .list_resource_templates(params)
+            .await
+    }
+
+    /// Read a resource from the specified server.
+    pub async fn read_resource(
+        &self,
+        server: &str,
+        params: ReadResourceRequestParams,
+    ) -> Result<ReadResourceResult> {
+        self.client_handle(server)
+            .ok_or_else(|| anyhow!("unknown MCP server '{server}'"))?
+            .read_resource(params)
+            .await
+    }
+
+    async fn client_by_name(&self, name: &str) -> Result<ManagedClient> {
+        self.clients
+            .get(name)
+            .ok_or_else(|| anyhow!("unknown MCP server '{name}'"))?
+            .client()
+            .await
+            .context("failed to get client")
+    }
+}
+
+/// A cheaply-cloneable handle to a single MCP server's client, detached from
+/// the [`McpConnectionManager`] (and therefore from the session-level
+/// `RwLock<McpConnectionManager>`).
+///
+/// The handle clones the `Arc`-backed client state, so a caller can resolve it
+/// while holding the manager read lock for only microseconds, drop the lock,
+/// and then run the (potentially slow) MCP round-trip without the lock held.
+/// That is what prevents a single slow/wedged server from stalling every other
+/// MCP call behind a queued `refresh_mcp_servers` writer.
+///
+/// Refresh boundary: the handle pins the client it resolved. If the manager is
+/// refreshed and the old client shut down while an op is in flight, that op
+/// resolves with a bounded transport error (and is in any case bounded by the
+/// per-call tool timeout) rather than hanging — and, being off the manager
+/// lock, it can no longer block any other call.
+#[derive(Clone)]
+pub struct McpClientHandle {
+    server: String,
+    inner: AsyncManagedClient,
+}
+
+impl McpClientHandle {
+    async fn resolved(&self) -> Result<ManagedClient> {
+        self.inner.client().await.context("failed to get client")
+    }
+
+    /// Invoke a tool on this server. Runs without any manager lock held.
+    pub async fn call_tool(
+        &self,
+        tool: &str,
+        arguments: Option<serde_json::Value>,
+        meta: Option<serde_json::Value>,
+    ) -> Result<CallToolResult> {
+        let server = &self.server;
+        let client = self.resolved().await?;
         if !client.tool_filter.allows(tool) {
             return Err(anyhow!(
                 "tool '{tool}' is disabled for MCP server '{server}'"
@@ -719,25 +837,14 @@ impl McpConnectionManager {
         })
     }
 
-    pub async fn server_supports_sandbox_state_meta_capability(
-        &self,
-        server: &str,
-    ) -> Result<bool> {
-        Ok(self
-            .client_by_name(server)
-            .await?
-            .server_supports_sandbox_state_meta_capability)
-    }
-
-    /// List resources from the specified server.
+    /// List resources from this server. Runs without any manager lock held.
     pub async fn list_resources(
         &self,
-        server: &str,
         params: Option<PaginatedRequestParams>,
     ) -> Result<ListResourcesResult> {
-        let managed = self.client_by_name(server).await?;
+        let server = &self.server;
+        let managed = self.resolved().await?;
         let timeout = managed.tool_timeout;
-
         managed
             .client
             .list_resources(params, timeout)
@@ -745,46 +852,35 @@ impl McpConnectionManager {
             .with_context(|| format!("resources/list failed for `{server}`"))
     }
 
-    /// List resource templates from the specified server.
+    /// List resource templates from this server. Runs without any manager lock held.
     pub async fn list_resource_templates(
         &self,
-        server: &str,
         params: Option<PaginatedRequestParams>,
     ) -> Result<ListResourceTemplatesResult> {
-        let managed = self.client_by_name(server).await?;
+        let server = &self.server;
+        let managed = self.resolved().await?;
         let client = managed.client.clone();
         let timeout = managed.tool_timeout;
-
         client
             .list_resource_templates(params, timeout)
             .await
             .with_context(|| format!("resources/templates/list failed for `{server}`"))
     }
 
-    /// Read a resource from the specified server.
+    /// Read a resource from this server. Runs without any manager lock held.
     pub async fn read_resource(
         &self,
-        server: &str,
         params: ReadResourceRequestParams,
     ) -> Result<ReadResourceResult> {
-        let managed = self.client_by_name(server).await?;
+        let server = &self.server;
+        let managed = self.resolved().await?;
         let client = managed.client.clone();
         let timeout = managed.tool_timeout;
         let uri = params.uri.clone();
-
         client
             .read_resource(params, timeout)
             .await
             .with_context(|| format!("resources/read failed for `{server}` ({uri})"))
-    }
-
-    async fn client_by_name(&self, name: &str) -> Result<ManagedClient> {
-        self.clients
-            .get(name)
-            .ok_or_else(|| anyhow!("unknown MCP server '{name}'"))?
-            .client()
-            .await
-            .context("failed to get client")
     }
 }
 

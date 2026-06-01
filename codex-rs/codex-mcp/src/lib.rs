@@ -1,3 +1,4 @@
+pub use connection_manager::McpClientHandle;
 pub use connection_manager::McpConnectionManager;
 pub use connection_manager::tool_is_model_visible;
 pub use elicitation::ElicitationReviewRequest;

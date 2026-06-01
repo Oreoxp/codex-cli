@@ -2,6 +2,7 @@ use super::*;
 use codex_mcp::ElicitationReviewRequest;
 use codex_mcp::ElicitationReviewer;
 use codex_mcp::ElicitationReviewerHandle;
+use codex_mcp::McpClientHandle;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_KEY as MCP_ELICITATION_APPROVAL_KIND_KEY;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_MCP_TOOL_CALL as MCP_ELICITATION_APPROVAL_KIND_MCP_TOOL_CALL;
@@ -20,6 +21,14 @@ use rmcp::model::CreateElicitationRequestParams;
 use rmcp::model::ElicitationAction;
 use rmcp::model::Meta;
 use serde_json::Map;
+
+/// Upper bound on acquiring the MCP connection-manager read lock. After the
+/// per-call handle refactor the lock is only held for the microseconds it takes
+/// to clone a [`McpClientHandle`] out of the map, so this only ever trips on a
+/// pathological stuck holder — at which point failing the call fast is far
+/// better than freezing it (and, via the write-preferring `RwLock`, every other
+/// MCP call) unbounded. See the OpenCrab P6-hang fix.
+const MCP_MANAGER_LOCK_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 const MCP_ELICITATION_DECLINE_MESSAGE_KEY: &str = "message";
 const TOOL_SUGGESTION_ACTION_INSTALL: &str = "install";
@@ -232,61 +241,65 @@ impl Session {
             .await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "MCP resource calls are serialized through the session-owned manager guard"
-    )]
+    /// Resolve a detached [`McpClientHandle`] for `server`, holding the MCP
+    /// connection-manager read lock only long enough to clone the handle out of
+    /// the map — never across the (potentially slow) MCP round-trip. This is
+    /// what keeps a single slow/wedged server from stalling every other MCP
+    /// call behind a queued `refresh_mcp_servers` writer on the write-preferring
+    /// `RwLock`. The acquisition itself is bounded by
+    /// [`MCP_MANAGER_LOCK_ACQUIRE_TIMEOUT`] so a future stuck holder can never
+    /// block new calls unbounded.
+    async fn mcp_client_handle(&self, server: &str) -> anyhow::Result<McpClientHandle> {
+        let manager = tokio::time::timeout(
+            MCP_MANAGER_LOCK_ACQUIRE_TIMEOUT,
+            self.services.mcp_connection_manager.read(),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "timed out acquiring the MCP connection-manager lock for server '{server}'"
+            )
+        })?;
+        manager
+            .client_handle(server)
+            .ok_or_else(|| anyhow::anyhow!("unknown MCP server '{server}'"))
+        // `manager` (the read guard) drops here — before the caller awaits the
+        // op on the returned handle.
+    }
+
     pub async fn list_resources(
         &self,
         server: &str,
         params: Option<PaginatedRequestParams>,
     ) -> anyhow::Result<ListResourcesResult> {
-        self.services
-            .mcp_connection_manager
-            .read()
-            .await
-            .list_resources(server, params)
+        self.mcp_client_handle(server)
+            .await?
+            .list_resources(params)
             .await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "MCP resource calls are serialized through the session-owned manager guard"
-    )]
     pub async fn list_resource_templates(
         &self,
         server: &str,
         params: Option<PaginatedRequestParams>,
     ) -> anyhow::Result<ListResourceTemplatesResult> {
-        self.services
-            .mcp_connection_manager
-            .read()
-            .await
-            .list_resource_templates(server, params)
+        self.mcp_client_handle(server)
+            .await?
+            .list_resource_templates(params)
             .await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "MCP resource calls are serialized through the session-owned manager guard"
-    )]
     pub async fn read_resource(
         &self,
         server: &str,
         params: ReadResourceRequestParams,
     ) -> anyhow::Result<ReadResourceResult> {
-        self.services
-            .mcp_connection_manager
-            .read()
-            .await
-            .read_resource(server, params)
+        self.mcp_client_handle(server)
+            .await?
+            .read_resource(params)
             .await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "MCP tool calls are serialized through the session-owned manager guard"
-    )]
     pub async fn call_tool(
         &self,
         server: &str,
@@ -294,11 +307,9 @@ impl Session {
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        self.services
-            .mcp_connection_manager
-            .read()
-            .await
-            .call_tool(server, tool, arguments, meta)
+        self.mcp_client_handle(server)
+            .await?
+            .call_tool(tool, arguments, meta)
             .await
     }
 

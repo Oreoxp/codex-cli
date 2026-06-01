@@ -828,6 +828,80 @@ async fn list_all_tools_uses_cached_tool_info_snapshot_while_client_is_pending()
     assert_eq!(tool.callable_name, "calendar_create_event");
 }
 
+/// Regression guard for the OpenCrab P6-hang read-lock convoy.
+///
+/// A tool/resource call must run on a [`McpClientHandle`] that is detached from
+/// the manager, so the session-level `RwLock<McpConnectionManager>` read lock is
+/// released *before* the (potentially slow / wedged) MCP round-trip. If it were
+/// held across the call, a single stuck server would block every other MCP call
+/// behind a queued `refresh_mcp_servers` writer on the write-preferring lock —
+/// which is what produced the >120s freeze (longer than both the 30s startup and
+/// 120s tool timeouts, because the stall is at lock acquisition, outside both).
+///
+/// Here the only client's readiness future is `pending` forever (a wedged
+/// server). We mirror `Session::call_tool`'s access pattern — clone the handle
+/// under a brief read lock, drop the lock, then run the op — and assert that a
+/// writer (and a second reader) can take the manager lock *while the op is still
+/// stuck*. Holding the read lock across the call (the pre-fix behaviour) would
+/// make the `manager.write()` below time out.
+#[tokio::test]
+async fn client_handle_runs_without_holding_the_manager_lock() {
+    let pending_client = futures::future::pending::<Result<ManagedClient, StartupOutcomeError>>()
+        .boxed()
+        .shared();
+    let approval_policy = Constrained::allow_any(AskForApproval::OnFailure);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let mut manager = McpConnectionManager::new_uninitialized(
+        &approval_policy,
+        &permission_profile,
+        /*prefix_mcp_tool_names*/ true,
+    );
+    manager.clients.insert(
+        "wedged".to_string(),
+        AsyncManagedClient {
+            client: pending_client,
+            cached_tool_info_snapshot: None,
+            cached_server_info: None,
+            startup_complete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
+            cancel_token: CancellationToken::new(),
+        },
+    );
+
+    let manager = Arc::new(tokio::sync::RwLock::new(manager));
+
+    // Mirror the session access pattern: clone the handle out under a *brief*
+    // read lock, drop the lock, then run the (here, forever-pending) op.
+    let handle = {
+        let guard = manager.read().await;
+        guard
+            .client_handle("wedged")
+            .expect("handle for a registered server")
+    }; // read guard dropped here
+    let op = tokio::spawn(async move { handle.call_tool("anything", None, None).await });
+
+    // The op is stuck on readiness, but it does NOT hold the manager lock, so a
+    // writer can acquire it promptly.
+    let write_acquired = tokio::time::timeout(Duration::from_secs(1), manager.write()).await;
+    assert!(
+        write_acquired.is_ok(),
+        "a writer must acquire the manager lock while a slow MCP op is in flight"
+    );
+    drop(write_acquired);
+
+    // A second reader (another tool call resolving its handle) is also not
+    // blocked by the stuck op.
+    let second = tokio::time::timeout(Duration::from_millis(200), async {
+        manager.read().await.client_handle("wedged").is_some()
+    })
+    .await;
+    assert_eq!(second, Ok(true), "new readers must not be blocked either");
+
+    // The wedged op is still pending — it never completed or errored on its own.
+    assert!(!op.is_finished(), "the wedged op should still be pending");
+    op.abort();
+}
+
 #[tokio::test]
 async fn list_available_server_infos_uses_cache_while_client_is_pending() {
     let pending_client = futures::future::pending::<Result<ManagedClient, StartupOutcomeError>>()
