@@ -457,7 +457,12 @@ mod tests {
             provider.account_state(),
             Ok(ProviderAccountState {
                 account: None,
-                requires_openai_auth: true,
+                // OpenCrab step-22 fork — `create_openai_provider` sets
+                // `requires_openai_auth: false` (ChatGPT login enforcement
+                // removed across the board; see patch 0001 in
+                // `model-provider-info`), so the reported account state
+                // follows. Upstream asserts `true` here.
+                requires_openai_auth: false,
             })
         );
     }
@@ -474,8 +479,12 @@ mod tests {
         assert_eq!(
             provider.account_state(),
             Ok(ProviderAccountState {
-                account: Some(ProviderAccount::ApiKey),
-                requires_openai_auth: true,
+                // OpenCrab step-22 fork — with `requires_openai_auth: false`
+                // (patch 0001), `account_state()` takes its `else { None }`
+                // branch and never surfaces the API-key account for the
+                // OpenAI provider. Upstream asserts `Some(ApiKey)` + `true`.
+                account: None,
+                requires_openai_auth: false,
             })
         );
     }
