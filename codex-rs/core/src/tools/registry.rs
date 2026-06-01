@@ -27,6 +27,7 @@ use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
 use crate::tools::tool_search_entry::ToolSearchInfo;
 use crate::util::error_or_panic;
 use codex_extension_api::ToolCallOutcome;
+use codex_mcp::flatten_mcp_tool_name;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::EventMsg;
@@ -367,6 +368,41 @@ impl ToolRegistry {
         self.tools.get(name).map(Arc::clone)
     }
 
+    /// OpenCrab step-22 fork — invert a DashScope-flattened MCP tool name
+    /// back to its canonical namespaced `ToolName` (the registry key).
+    ///
+    /// When a provider lacks the Responses `type: "namespace"` container,
+    /// `core::tools::spec_plan` flattens each MCP tool to the wire name
+    /// `flatten_mcp_tool_name(namespace, tool)` and exposes it as a plain
+    /// function. The model then calls back with that flat `name` and NO
+    /// namespace, so an exact `tool()` lookup misses. This recomputes the
+    /// same wire name from every registered *namespaced* key and returns the
+    /// unique match. Handlers are registered independently of the
+    /// model-visible specs (see `from_tools`), so the recovered key always
+    /// has a live handler.
+    ///
+    /// Returns `None` when `name` already carries a namespace (not a
+    /// flattened call), when nothing matches, or when more than one key
+    /// collides — the ambiguous case deliberately falls through to the normal
+    /// unsupported-tool path rather than guessing.
+    fn reconcile_flattened(&self, name: &ToolName) -> Option<ToolName> {
+        if name.namespace.is_some() {
+            return None;
+        }
+        let mut found: Option<ToolName> = None;
+        for key in self.tools.keys() {
+            if let Some(ns) = key.namespace.as_deref()
+                && flatten_mcp_tool_name(ns, &key.name) == name.name
+            {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(key.clone());
+            }
+        }
+        found
+    }
+
     #[cfg(test)]
     pub(crate) fn tool_names_for_test(&self) -> Vec<ToolName> {
         let mut names = self.tools.keys().cloned().collect::<Vec<_>>();
@@ -414,8 +450,13 @@ impl ToolRegistry {
         mut invocation: ToolInvocation,
         terminal_outcome_reached: Option<Arc<AtomicBool>>,
     ) -> Result<AnyToolResult, FunctionCallError> {
-        let tool_name = invocation.tool_name.clone();
-        let tool_name_flat = flat_tool_name(&tool_name);
+        // OpenCrab step-22 fork — `tool_name` may be reassigned below when a
+        // DashScope-flattened MCP name is reconciled to its canonical key, so
+        // it is `mut`. `tool_name_flat` is taken owned so that reassignment
+        // cannot collide with its borrow; it intentionally keeps the original
+        // flat wire name (what the model actually sent) for telemetry.
+        let mut tool_name = invocation.tool_name.clone();
+        let tool_name_flat = flat_tool_name(&tool_name).into_owned();
         let call_id_owned = invocation.call_id.clone();
         let otel = invocation.turn.session_telemetry.clone();
         let base_tool_result_tags = [
@@ -448,23 +489,40 @@ impl ToolRegistry {
         let dispatch_trace = ToolDispatchTrace::start(&invocation);
         let tool = match self.tool(&tool_name) {
             Some(tool) => tool,
-            None => {
-                let message = unsupported_tool_call_message(&invocation.payload, &tool_name);
-                let log_payload = invocation.payload.log_payload();
-                otel.tool_result_with_tags(
-                    tool_name_flat.as_ref(),
-                    &call_id_owned,
-                    log_payload.as_ref(),
-                    Duration::ZERO,
-                    /*success*/ false,
-                    &message,
-                    &base_tool_result_tags,
-                    /*extra_trace_fields*/ &[],
-                );
-                let err = FunctionCallError::RespondToModel(message);
-                dispatch_trace.record_failed(&err);
-                return Err(err);
-            }
+            // OpenCrab step-22 fork — a DashScope-flattened MCP tool arrives
+            // with no namespace and the wire name
+            // `flatten_mcp_tool_name(namespace, tool)`. Recover the canonical
+            // namespaced `ToolName` (the registry key) AND its handler —
+            // registered independently of the model-visible specs — in one
+            // step so the call still resolves. See `reconcile_flattened` and
+            // the spec flatten path in `core::tools::spec_plan`.
+            None => match self
+                .reconcile_flattened(&tool_name)
+                .and_then(|resolved| self.tool(&resolved).map(|tool| (resolved, tool)))
+            {
+                Some((resolved, tool)) => {
+                    invocation.tool_name = resolved.clone();
+                    tool_name = resolved;
+                    tool
+                }
+                None => {
+                    let message = unsupported_tool_call_message(&invocation.payload, &tool_name);
+                    let log_payload = invocation.payload.log_payload();
+                    otel.tool_result_with_tags(
+                        tool_name_flat.as_ref(),
+                        &call_id_owned,
+                        log_payload.as_ref(),
+                        Duration::ZERO,
+                        /*success*/ false,
+                        &message,
+                        &base_tool_result_tags,
+                        /*extra_trace_fields*/ &[],
+                    );
+                    let err = FunctionCallError::RespondToModel(message);
+                    dispatch_trace.record_failed(&err);
+                    return Err(err);
+                }
+            },
         };
 
         let telemetry_tags = tool.telemetry_tags(&invocation).await;

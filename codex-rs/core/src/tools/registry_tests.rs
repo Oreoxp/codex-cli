@@ -466,3 +466,79 @@ fn test_invocation(
         },
     }
 }
+
+// OpenCrab step-22 fork — closed-loop coverage for the DashScope flatten
+// shim: the spec side emits `flatten_mcp_tool_name(namespace, tool)`; the
+// model calls it back with no namespace; `reconcile_flattened` must recover
+// the canonical namespaced `ToolName` (the registry key) so the handler
+// resolves.
+
+fn handler_for(key: &codex_tools::ToolName) -> Arc<dyn CoreToolRuntime> {
+    Arc::new(TestHandler {
+        tool_name: key.clone(),
+    }) as Arc<dyn CoreToolRuntime>
+}
+
+#[test]
+fn reconcile_flattened_recovers_canonical_namespaced_key() {
+    // Registry key as registered by `from_tools` for an MCP tool with the
+    // `mcp__` prefix (prefix_mcp_tool_names = true).
+    let key = codex_tools::ToolName::namespaced("mcp__server", "tool");
+    let registry = ToolRegistry::new(HashMap::from([(key.clone(), handler_for(&key))]));
+
+    // The model echoes the flattened wire name with NO namespace.
+    let flat = codex_tools::ToolName::plain(flatten_mcp_tool_name("mcp__server", "tool"));
+    assert_eq!(flat.name, "mcp__server__tool");
+    assert!(registry.tool(&flat).is_none(), "exact lookup must miss");
+    assert_eq!(registry.reconcile_flattened(&flat), Some(key));
+}
+
+#[test]
+fn reconcile_flattened_handles_unprefixed_namespace() {
+    // prefix_mcp_tool_names = false → namespace carries no `mcp__` prefix.
+    let key = codex_tools::ToolName::namespaced("server", "tool");
+    let registry = ToolRegistry::new(HashMap::from([(key.clone(), handler_for(&key))]));
+
+    let flat = codex_tools::ToolName::plain(flatten_mcp_tool_name("server", "tool"));
+    assert_eq!(flat.name, "server__tool");
+    assert_eq!(registry.reconcile_flattened(&flat), Some(key));
+}
+
+#[test]
+fn reconcile_flattened_ignores_already_namespaced_calls() {
+    // A normal namespaced call is NOT a flattened call → None (the exact
+    // `tool()` lookup already handles it; reconcile must not interfere).
+    let key = codex_tools::ToolName::namespaced("mcp__server", "tool");
+    let registry = ToolRegistry::new(HashMap::from([(key.clone(), handler_for(&key))]));
+    assert_eq!(registry.reconcile_flattened(&key), None);
+}
+
+#[test]
+fn reconcile_flattened_returns_none_when_ambiguous() {
+    // Two distinct keys flatten to the same wire name; the namespace/tool
+    // split is ambiguous, so reconcile refuses to guess.
+    let a = codex_tools::ToolName::namespaced("mcp__a", "b__c");
+    let b = codex_tools::ToolName::namespaced("mcp__a__b", "c");
+    assert_eq!(
+        flatten_mcp_tool_name("mcp__a", "b__c"),
+        flatten_mcp_tool_name("mcp__a__b", "c"),
+        "precondition: both keys must flatten identically",
+    );
+    let registry = ToolRegistry::new(HashMap::from([
+        (a.clone(), handler_for(&a)),
+        (b.clone(), handler_for(&b)),
+    ]));
+
+    let flat = codex_tools::ToolName::plain("mcp__a__b__c");
+    assert_eq!(registry.reconcile_flattened(&flat), None);
+}
+
+#[test]
+fn reconcile_flattened_returns_none_when_no_match() {
+    let key = codex_tools::ToolName::namespaced("mcp__server", "tool");
+    let registry = ToolRegistry::new(HashMap::from([(key.clone(), handler_for(&key))]));
+    assert_eq!(
+        registry.reconcile_flattened(&codex_tools::ToolName::plain("unrelated_tool")),
+        None,
+    );
+}

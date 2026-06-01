@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use codex_api::Provider;
 use codex_api::SharedAuthProvider;
+// OpenCrab step-22 fork — see capabilities() override below.
+use codex_api::provider_needs_dashscope_tool_output_rewrite;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
@@ -177,6 +179,31 @@ impl ConfiguredModelProvider {
 impl ModelProvider for ConfiguredModelProvider {
     fn info(&self) -> &ModelProviderInfo {
         &self.info
+    }
+
+    /// OpenCrab step-22 fork — disable the `namespace_tools` provider
+    /// capability for DashScope's OpenAI-compatible endpoint. The default
+    /// `ProviderCapabilities::default()` sets `namespace_tools: true`, which
+    /// causes MCP tools to be serialized as `type: "namespace"` containers
+    /// in the Responses API request (see `core::tools::spec_plan` around the
+    /// `namespace_tools_enabled` filter). DashScope's Responses-compatible
+    /// shim does not unpack that container, so qwen never sees the inner
+    /// function tools and silently falls back to prose. Mirror Amazon
+    /// Bedrock's pattern: opt the provider out of the capability and let the
+    /// flattening path (also added in step-22) emit each MCP tool as a flat
+    /// `type: "function"` entry instead.
+    ///
+    /// Detection is delegated to the existing dashscope detector in
+    /// `codex_api::requests::responses` so there is exactly one source of
+    /// truth for "is this a DashScope endpoint" across the fork.
+    fn capabilities(&self) -> ProviderCapabilities {
+        let mut caps = ProviderCapabilities::default();
+        if let Some(base_url) = self.info.base_url.as_deref()
+            && provider_needs_dashscope_tool_output_rewrite(base_url)
+        {
+            caps.namespace_tools = false;
+        }
+        caps
     }
 
     fn auth_manager(&self) -> Option<Arc<AuthManager>> {

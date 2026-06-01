@@ -76,6 +76,8 @@ pub use crate::provider::Provider;
 pub use crate::provider::RetryConfig;
 pub use crate::provider::is_azure_responses_provider;
 pub use crate::requests::Compression;
+// OpenCrab step-22 fork — see requests/mod.rs.
+pub use crate::requests::provider_needs_dashscope_tool_output_rewrite;
 pub use crate::search::AllowedCaller;
 pub use crate::search::ApproximateLocation;
 pub use crate::search::ClickOperation;

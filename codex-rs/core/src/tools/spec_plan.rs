@@ -57,6 +57,7 @@ use crate::tools::router::ToolRouterParams;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_mcp::ToolInfo;
+use codex_mcp::flatten_mcp_tool_name;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
@@ -216,10 +217,32 @@ fn build_model_visible_specs_and_registry(
     }
 
     let registry = ToolRegistry::from_tools(runtimes);
+    // OpenCrab step-22 fork — when the provider supports the Responses
+    // `type: "namespace"` tool container, keep specs as-is. When it does NOT
+    // (DashScope; see `ConfiguredModelProvider::capabilities`), FLATTEN each
+    // MCP namespace into individual `type: "function"` tools whose wire name
+    // is `flatten_mcp_tool_name(namespace, tool)`. Upstream would otherwise
+    // DROP every `ToolSpec::Namespace` when `namespace_tools` is off, hiding
+    // MCP tools from the model entirely. The inverse parser lives in
+    // `ToolRegistry::reconcile_flattened` (the tool-dispatch miss branch),
+    // which recovers the canonical namespaced `ToolName` so the handler —
+    // registered independently of these specs — still resolves.
+    let namespace_tools = namespace_tools_enabled(turn_context);
     let model_visible_specs = merge_into_namespaces(specs)
         .into_iter()
-        .filter(|spec| {
-            namespace_tools_enabled(turn_context) || !matches!(spec, ToolSpec::Namespace(_))
+        .flat_map(|spec| match spec {
+            ToolSpec::Namespace(ns) if !namespace_tools => {
+                let ResponsesApiNamespace { name, tools, .. } = ns;
+                tools
+                    .into_iter()
+                    .map(|ns_tool| {
+                        let ResponsesApiNamespaceTool::Function(mut tool) = ns_tool;
+                        tool.name = flatten_mcp_tool_name(&name, &tool.name);
+                        ToolSpec::Function(tool)
+                    })
+                    .collect::<Vec<_>>()
+            }
+            spec => vec![spec],
         })
         .collect();
 

@@ -7,6 +7,10 @@ pub use rmcp_client::MCP_SANDBOX_STATE_META_CAPABILITY;
 pub use runtime::McpRuntimeContext;
 pub use runtime::SandboxState;
 pub use tools::ToolInfo;
+// OpenCrab step-22 fork — flat MCP wire-name builder shared by the spec
+// flatten path (`core::tools::spec_plan`) and the registry reconcile
+// (`core::tools::registry::ToolRegistry::reconcile_flattened`).
+pub use tools::flatten_mcp_tool_name;
 
 pub use mcp::CODEX_APPS_MCP_SERVER_NAME;
 pub use mcp::McpConfig;

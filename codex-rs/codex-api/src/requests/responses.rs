@@ -103,7 +103,15 @@ fn tool_output_value_to_text(value: Option<&Value>) -> String {
     value.to_string()
 }
 
-pub(crate) fn provider_needs_dashscope_tool_output_rewrite(base_url: &str) -> bool {
+/// True iff the configured base URL points at DashScope's OpenAI-compatible
+/// endpoint. OpenCrab step-22 fork: also consumed by
+/// `codex_model_provider::provider` to disable the `namespace_tools`
+/// provider capability — DashScope's Responses-API shim does not unpack the
+/// OpenAI-Responses `type: "namespace"` tool container, so emitting that
+/// shape silently hides MCP tools from the model. Keeping the detector
+/// authoritative in one place avoids drift between this dashscope-specific
+/// rewrite and the namespace-disable knob.
+pub fn provider_needs_dashscope_tool_output_rewrite(base_url: &str) -> bool {
     let normalized = base_url.to_ascii_lowercase();
     normalized.contains("dashscope.aliyuncs.com")
 }

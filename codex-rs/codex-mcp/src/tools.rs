@@ -270,6 +270,23 @@ fn callable_namespace_with_prefix(namespace: &str, prefix_mcp_tool_names: bool) 
     }
 }
 
+/// OpenCrab step-22 fork — produce the flat, model-visible wire name for an
+/// MCP tool when the provider does NOT support the Responses
+/// `type: "namespace"` tool container (DashScope; see
+/// `ConfiguredModelProvider::capabilities`). The spec-side flatten path in
+/// `core::tools::spec_plan` emits this name; the registry-side
+/// `ToolRegistry::reconcile_flattened` recomputes it from each registered
+/// canonical `ToolName` to invert a model callback back to its handler.
+///
+/// Format: `<namespace><MCP_TOOL_NAME_DELIMITER><tool>`. `sanitize_*` is a
+/// no-op on already-valid names (`namespace` and `tool` are sanitized
+/// upstream and `__` is valid), so it only guards stray characters — and
+/// because BOTH ends call this same function with the same `(namespace,
+/// tool)`, the wire name is always closed regardless of what it does.
+pub fn flatten_mcp_tool_name(namespace: &str, tool: &str) -> String {
+    sanitize_responses_api_tool_name(&format!("{namespace}{MCP_TOOL_NAME_DELIMITER}{tool}"))
+}
+
 fn mask_input_schema_for_file_path_params(input_schema: &mut JsonValue, file_params: &[String]) {
     let Some(properties) = input_schema
         .as_object_mut()
