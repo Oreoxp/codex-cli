@@ -62,6 +62,9 @@ pub(super) async fn search_threads(
         cwd: store.config.codex_home.clone(),
         model_provider_id: store.config.default_model_provider_id.clone(),
         generate_memories: false,
+        // OpenCrab Step 8 — search/listing reads the upstream
+        // `codex_home/sessions/YYYY/MM/DD/` layout; no per-thread override.
+        team_session_dir: None,
     };
     let rg_command = InstallContext::current().rg_command();
     let matching_paths = search_rollout_paths(

@@ -135,6 +135,8 @@ async fn get_conversation_summary_by_thread_id_reads_pathless_store_thread() -> 
                 memory_mode: ThreadMemoryMode::Disabled,
             },
             event_persistence_mode: ThreadEventPersistenceMode::default(),
+            // OpenCrab Step 8 — no per-thread rollout override in this test.
+            team_session_dir: None,
         })
         .await?;
 

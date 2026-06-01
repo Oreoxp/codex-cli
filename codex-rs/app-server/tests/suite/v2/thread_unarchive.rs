@@ -222,6 +222,8 @@ async fn thread_unarchive_preserves_pathless_store_metadata() -> Result<()> {
                 memory_mode: ThreadMemoryMode::Disabled,
             },
             event_persistence_mode: ThreadEventPersistenceMode::default(),
+            // OpenCrab Step 8 — no per-thread rollout override in this test.
+            team_session_dir: None,
         })
         .await?;
     store
